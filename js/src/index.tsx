@@ -5,10 +5,11 @@
 import { Atmosphere, ThemeProvider } from '@sc/ui';
 import React from 'react';
 import Reconciler from 'react-reconciler';
-import { LegacyRoot } from 'react-reconciler/constants';
+import { ConcurrentRoot } from 'react-reconciler/constants';
 
 import { hostConfig } from './hostConfig';
-import { View } from './react-native';
+import { authStatus } from './live-data';
+import { Text, View } from './react-native';
 import { Animated, useAnimatedStyle, useSharedValue, withTiming } from './reanimated';
 import { Blur, Box, BoxShadow, Canvas, Circle, Group, LinearGradient, RadialGradient, RoundedRect, rect, rrect, vec } from './rnskia';
 
@@ -87,6 +88,32 @@ function PulseBadge() {
   return <Animated.View style={style} />;
 }
 
+// Spike 7b: proves the whole sc-rn bridge end to end through the real
+// bundle — not just the isolated Rust test in js-host/src/lib.rs. `rn-linux`
+// calls `__scInitCore` before this ever mounts (see main.rs), so by the time
+// `authStatus()`'s Promise resolves, the background tokio runtime has run a
+// real `sc_rn::auth_status()` call and the result made it back through a
+// live GPU frame loop, not a synchronous test harness.
+function LiveDataProbe() {
+  const [status, setStatus] = React.useState('sc-rn: loading…');
+
+  React.useEffect(() => {
+    let cancelled = false;
+    authStatus()
+      .then((s) => {
+        if (!cancelled) setStatus(`sc-rn: hasSession=${s.hasSession} authenticated=${s.authenticated}`);
+      })
+      .catch((e: Error) => {
+        if (!cancelled) setStatus(`sc-rn error: ${e.message}`);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return <Text style={{ margin: 16, color: [1.0, 1.0, 1.0, 0.85] }}>{status}</Text>;
+}
+
 function App() {
   return (
     <ThemeProvider accent="#5a8cff" perfMode="beauty">
@@ -95,6 +122,10 @@ function App() {
             swap (build.mjs) works end to end, not just our own test scene. */}
         <Atmosphere />
         <Scene />
+        <LiveDataProbe />
+        {/* PulseBadge stays last — reanimated_test (js-host/src/lib.rs) finds
+            it via `children_of(root).last()`, robust to however many
+            siblings render before it, not to ones added after. */}
         <PulseBadge />
       </View>
     </ThemeProvider>
@@ -109,7 +140,7 @@ const throwFatal = (error: unknown) => {
 
 const root = Renderer.createContainer(
   container,
-  LegacyRoot,
+  ConcurrentRoot,
   null,
   false,
   null,
@@ -120,10 +151,13 @@ const root = Renderer.createContainer(
   null,
 );
 
-// TODO(spike 4c, tracked in Desktop-Runtime task list): ConcurrentRoot —
-// same mode real RN/Fabric uses — reaches `updateContainer` cleanly but never
-// schedules a commit here; LegacyRoot + forced sync flush is the
-// verified-working path for now.
-Renderer.flushSyncFromReconciler(() => {
-  Renderer.updateContainer(<App />, root, null, null);
-});
+// ConcurrentRoot — the same mode real RN/Fabric uses. Previously this reached
+// `updateContainer` but never scheduled a commit; root-caused (see
+// js-host/src/host.rs's PRELUDE_JS) to the `setTimeout`/`setImmediate` shims
+// running their callback inline instead of deferring — the `scheduler`
+// package schedules Concurrent-mode work through exactly that primitive, so
+// an inline-synchronous shim meant the scheduled callback either never ran
+// on its own or re-entered mid-commit. Now that timers genuinely defer to
+// `__scDrainTimers()` (rn-linux's render loop, once per frame), plain
+// `updateContainer` — no forced sync flush — schedules and commits normally.
+Renderer.updateContainer(<App />, root, null, null);

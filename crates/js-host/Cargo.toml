@@ -6,8 +6,15 @@ license.workspace = true
 
 [dependencies]
 ordered-float = "4"
-rusty_hermes = { git = "https://github.com/rust-hermes/rusty_hermes", branch = "main" }
+# Fork, not upstream: patches a genuine cmake-rs generator bug that blocks
+# Windows builds (libhermes-sys passed "-G Ninja" as a raw configure_arg
+# instead of Config::generator("Ninja"), so cmake-rs's MSVC branch still
+# assumed a Visual Studio generator and appended -Thost=x64 -Ax64 alongside
+# it). See zxcloli666/rusty_hermes#windows-cmake-generator-fix.
+rusty_hermes = { git = "https://github.com/zxcloli666/rusty_hermes", branch = "windows-cmake-generator-fix" }
+sc-rn = { path = "../../../Core/shared/crates/sc-rn" }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 skia-safe = "0.99.0"
+tokio = { version = "1", features = ["rt-multi-thread"] }
 yoga = "0.5.0"

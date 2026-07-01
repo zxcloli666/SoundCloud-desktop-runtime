@@ -260,6 +260,20 @@ impl Scene {
         self.alloc(SceneNode::text(text))
     }
 
+    /// Content-only update for an existing text node (react-reconciler's
+    /// `commitTextUpdate`, called whenever a `<Text>` child string changes
+    /// between renders — every live-data-driven label needs this, not just
+    /// static copy). Re-derives the same placeholder width metric `text()`
+    /// uses at creation, so re-layout still accounts for the new length.
+    pub fn set_text(&mut self, id: NodeId, text: String) {
+        let cell = self.nodes.get(&id).expect("unknown text node id");
+        let mut node = cell.borrow_mut();
+        if let Some(yoga) = node.yoga.as_mut() {
+            yoga.set_width(pt(text.chars().count() as f32 * 8.0 + 4.0));
+        }
+        node.kind = NodeKind::Text(text);
+    }
+
     /// `kind_name` matches the host-config `type` string from `js/src/rnskia`
     /// (e.g. "Canvas", "Circle", "Group", "RadialGradient", "BoxShadow"...).
     pub fn create_sk_node(&mut self, kind_name: &str) -> NodeId {

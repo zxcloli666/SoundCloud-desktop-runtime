@@ -19,6 +19,7 @@ use winit::window::{WindowAttributes, WindowId};
 const BUNDLE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../js/dist/bundle.js");
 
 const TICK_JS: &str = "if (typeof __reanimatedTick === 'function') __reanimatedTick();";
+const DRAIN_TIMERS_JS: &str = "if (typeof __scDrainTimers === 'function') __scDrainTimers();";
 
 struct App {
     gpu: Option<GlWindowSurface>,
@@ -53,10 +54,23 @@ impl ApplicationHandler for App {
                 // react-reconciler schedules its commit through a microtask
                 // (our `queueMicrotask` shim) — Hermes only runs those when
                 // told to, there's no event loop doing it implicitly.
+                //
+                // Due timers first (our `setTimeout`/`setImmediate` shim,
+                // js-host/src/host.rs's PRELUDE_JS — this is how the
+                // `scheduler` package that react-reconciler depends on
+                // re-enters *after* a commit, e.g. a `useEffect` calling
+                // `setState`, without hitting React's "Should not already be
+                // working" reentrancy guard), then whatever microtasks that
+                // produced, mirroring a real event loop's task ordering.
+                self.hermes.eval(DRAIN_TIMERS_JS).expect("drain timers failed");
                 self.hermes.drain_microtasks().expect("drain microtasks");
                 // Reanimated worklets (spike 6) — our own per-frame tick,
                 // not a second UI-runtime thread. See js/src/reanimated.tsx.
                 self.hermes.eval(TICK_JS).expect("reanimated tick failed");
+                // Spike 7b: resolve/reject whatever sc-rn calls finished on
+                // the background tokio runtime since last frame. See
+                // js-host/src/live_data.rs and js/src/live-data.ts.
+                js_host::live_data::deliver(&self.hermes);
 
                 let (width, height): (u32, u32) = gpu.window.inner_size().into();
                 js_host::host::with_scene(|scene| {
@@ -86,6 +100,29 @@ impl ApplicationHandler for App {
 fn main() {
     let hermes = Runtime::new().expect("failed to create Hermes runtime");
     js_host::host::install(&hermes).expect("failed to install host functions");
+
+    // sc-rn (Core/shared) needs a data/cache dir before any JS calls into it
+    // (js/src/live-data.ts's `initCore`) — resolving *which* paths is the
+    // shell's job (see Core/shared/crates/sc-rn/src/runtime.rs), not JS's.
+    let data_dir = std::env::temp_dir().join("sc-desktop-runtime/data");
+    let cache_dir = std::env::temp_dir().join("sc-desktop-runtime/cache");
+    std::fs::create_dir_all(&data_dir).expect("create sc-rn data dir");
+    std::fs::create_dir_all(&cache_dir).expect("create sc-rn cache dir");
+    let init_err = hermes
+        .eval(&format!(
+            "__scInitCore({:?}, {:?}, false)",
+            data_dir.to_str().expect("data dir should be valid utf8"),
+            cache_dir.to_str().expect("cache dir should be valid utf8"),
+        ))
+        .expect("init_core eval failed")
+        .into_string()
+        .expect("init_core returns a string")
+        .to_rust_string()
+        .expect("valid utf8");
+    if !init_err.is_empty() {
+        panic!("sc-rn init_runtime failed: {init_err}");
+    }
+
     let bundle = std::fs::read_to_string(BUNDLE_PATH)
         .unwrap_or_else(|e| panic!("failed to read {BUNDLE_PATH}: {e} (run `pnpm build` in js/)"));
     hermes.eval(&bundle).expect("bundle JS failed");

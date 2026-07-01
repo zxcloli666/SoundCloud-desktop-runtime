@@ -4,6 +4,7 @@
 // react-reconciler, not Meta's Fabric C++ (see Desktop-Runtime/CLAUDE.md).
 declare const __scCreateView: () => number;
 declare const __scCreateText: (text: string) => number;
+declare const __scSetText: (id: number, text: string) => void;
 declare const __scCreateSkNode: (kind: string) => number;
 declare const __scAppendChild: (parent: number, child: number) => void;
 declare const __scRemoveChild: (parent: number, child: number) => void;
@@ -243,8 +244,8 @@ export const hostConfig = {
     }
   },
 
-  commitTextUpdate(): void {
-    throw new Error('text updates not supported yet');
+  commitTextUpdate(textInstance: TextInstance, _oldText: string, newText: string): void {
+    __scSetText(textInstance, newText);
   },
 
   hideInstance(): void {},

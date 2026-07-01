@@ -198,6 +198,108 @@ Fabric C++:
   Патч кидает ошибку сборки, если esbuild когда-нибудь поменяет форму
   helper'а (нужно будет обновить regex).
 
-Дальше — sc-rn TurboModule (живые данные, оставшаяся часть спайка 7). Windows-
-путь (RN-Windows + Skia-порт, спайк 1) — через `winbuild` (podman-windows, VS
-BuildTools уже стоит).
+- **Спайк 7b**: живые данные из `sc-rn` (`Core/shared/crates/sc-rn`, uniffi-мост
+  к реальному ядру — сеть/auth/кэш). Вызывается напрямую как обычные Rust
+  `async fn` (uniffi-обёртка — для Kotlin/Swift, нам просто нужен executor),
+  на собственном фоновом `tokio::Runtime` (`js-host/src/live_data.rs`) — сеть
+  никогда не блокирует рендер-поток. Поток: JS зовёт `__sc*`-хост-функцию с
+  `callback_id` → `live_data::spawn_call` кидает future в фоновый рантайм →
+  результат уходит в mpsc-канал → `live_data::deliver()` (зовётся из
+  `rn-linux` каждый кадр, рядом с reanimated-тиком) вызывает
+  `__scDeliverResult(callbackId, ok, payload)` в JS через `Function::call`
+  (payload — через `Runtime::create_value_from_json`, не строчный `eval`, так
+  что JSON-эскейпинг не наша забота). `js/src/live-data.ts` — тонкая обёртка:
+  `Map` pending-промисов по callback_id + типизированные DTO (зеркало
+  `sc-rn/src/dto.rs`, включая `TrackDto.badge`, которого не было в первой
+  версии `dto_json.rs` — добавлено при сверке с реальными полями).
+  Экспортирует `initCore`/`setSession`/`authStatus`/`me`/`homeClusters`/
+  `wave`/`resolveTracks`. `rn-linux` зовёт `__scInitCore` с temp-путями
+  (data/cache dir — политика реальных путей десктоп-рантайма это отдельная,
+  более крупная тема, не решается в рамках спайка) ДО эвала бандла — JS не
+  должен знать платформенные пути, это дело оболочки (см. `sc-rn/src/
+  runtime.rs`'s комментарий "пути под платформу даёт сама оболочка").
+  Зависимость `sc-rn` — временно `path`, не git+`[patch]` (стандартная схема
+  Core/CLAUDE.md): GitHub-репо `SoundCloud-Core` реально запушен только на
+  первом commit (LICENSE), весь актуальный код (включая сам `sc-rn`) лежит
+  локально закоммиченным/незакоммиченным в рабочем дереве — git-зависимость
+  физически не может резолвиться (Cargo не даёт комбинировать `git`+`path` в
+  одном dependency, а без `path` он ищет Cargo.toml в корне репо). Вернуться к
+  git+`[patch]`, когда Core запушит `shared/crates/sc-rn` по-настоящему.
+  Проверено `#[test]` (`live_data_test`) — реальный `sc_rn::auth_status()`
+  через весь мост туда и обратно, БЕЗ тестовых сокращений (тот же
+  `deliver()`, что и в проде) — и живым прогоном `rn-linux` (GPU-снапшот:
+  текст на экране реально показывает `hasSession=false authenticated=false`).
+
+  **⚠️ ВТОРАЯ КРУПНАЯ НАХОДКА — гонка с React-планировщиком**, всплыла именно
+  на спайке 7b (первый раз, когда стейт реально обновляется ПОСЛЕ монтирования
+  — `authStatus()` резолвится и зовёт `setState`). Симптом: `setState` внутри
+  `useEffect`/`.then()` вызывался (залогировано), но экран не менялся —
+  `commitTextUpdate` вообще не долетал. Корень (НЕ баг Hermes в этот раз, баг
+  НАШ): `setTimeout`/`setImmediate`-шимы в `host.rs::PRELUDE_JS` звали колбэк
+  СИНХРОННО-ИНЛАЙН ("рендерим статичное дерево, ждать нечего"). Но
+  react-reconciler's `scheduler`-пакет использует ИМЕННО `setImmediate`/
+  `setTimeout` как примитив "выйти на свежий стек" — чтобы запланировать
+  коммит ИЗНУТРИ уже идущего коммита (ровно кейс `useEffect`→`setState`) без
+  реентрантного вызова реконсилера. Синхронный шим это ломает: колбэк
+  вызывается ТУТ ЖЕ, реентерит `performWorkOnRoot`, попадает на собственный
+  guard React'а → кидает `Error: Should not already be working` — молча
+  проглатывается нашим `queueMicrotask`'s try/catch (виден только как
+  `console.error`, не краш), апдейт просто ПРОПАДАЕТ. Это же объясняло старую
+  загадку "ConcurrentRoot доходит до `updateContainer`, но не коммитит" —
+  ОДИН И ТОТ ЖЕ корень, не два разных.
+  **Фикс** (`host.rs::PRELUDE_JS`): таймеры больше не зовут колбэк инлайн —
+  кладутся в очередь (`Map` id→{fireAt, fn, intervalMs}, время — `Date.now()`,
+  доступен в голом Hermes без шима), дренится `__scDrainTimers()`, которую
+  `rn-linux` зовёт КАЖДЫЙ кадр СВЕЖИМ вызовом (не вложенным ни в какой другой
+  eval) — рядом с reanimated-тиком и `live_data::deliver()`, до
+  `drain_microtasks()` (микротаски, которые таймер породит, дренятся сразу же
+  следом, как в настоящем event loop). **Побочный эффект — ConcurrentRoot
+  теперь просто работает**: `index.tsx` переключён с `LegacyRoot` +
+  `flushSyncFromReconciler` на честный `ConcurrentRoot` + голый
+  `updateContainer` (без форс-синхронного флаша) — задача "[В конце] Добить
+  ConcurrentRoot" закрыта досрочно, не как отдельная работа, а как следствие
+  этого фикса. Единственное наблюдаемое отличие: начальный монтаж теперь тоже
+  идёт через `__scDrainTimers`/`drain_microtasks`, а не завершается инлайн
+  внутри одного `eval(bundle)` — тесты (`bundle_test`/`reanimated_test`/
+  `fills_arbitrary_aspect_ratio_test`) прокачивают несколько кадров
+  (`pump_frames` в `lib.rs`) после эвала бандла, прежде чем читать scene-дерево
+  — то же самое, что `rn-linux`'s реальный луп уже делает естественным
+  образом (он ведь крутится непрерывно).
+
+  **Третья находка, попутно** — `commitTextUpdate` был не реализован
+  (`throw new Error('text updates not supported yet')`) — раньше текст
+  создавался (`createTextInstance`), но никогда не обновлялся, потому что до
+  спайка 7b ни один экран не менял текст ПОСЛЕ монтажа. Любой живой
+  UI-текст (счётчики, названия треков, статусы) требует именно этого —
+  добавлено по-настоящему: `Scene::set_text` (`scene.rs`, пере-считает
+  плейсхолдер-ширину под новую строку) + `__scSetText` host-функция +
+  `hostConfig.ts`'s `commitTextUpdate` реально зовёт её вместо throw.
+
+Дальше — Windows (спайк 1). Архитектура полностью байпасит RN-Windows/Fabric
+(своя же Yoga+Skia+Hermes+react-reconciler схема, как на Linux), так что
+единственный платформенный блокер — сборка `rusty_hermes`/`libhermes-sys` под
+MSVC. Через `winbuild` (podman-windows, VS BuildTools уже стоит) найдены и
+исправлены (форк `github.com/zxcloli666/rusty_hermes`, ветка
+`windows-cmake-generator-fix`, задепенчено вместо апстрима `rust-hermes/
+rusty_hermes` — в `crates/js-host/Cargo.toml`) два реальных апстримных бага:
+  1. `libhermes-sys/build.rs` передавал `-G Ninja` через `configure_arg`
+     (сырую строку), а не через `Config::generator("Ninja")` — `cmake`-крейт
+     распознаёт Ninja ТОЛЬКО через своё поле `generator` (см. его
+     `Config::build()`), иначе на MSVC-таргете считает, что генератор —
+     Visual Studio, и добавляет `-Thost=x64 -Ax64` — эти флаги конфликтуют с
+     реально переданным `-G Ninja` ("Generator Ninja does not support
+     platform specification"). Фикс — `.generator("Ninja")`.
+  2. Компиляция `binding.cc` (`cc::Build`) звала `.flag("-std=c++17")`/
+     `.flag("-fexceptions")`/`.flag("-frtti")` — это GCC/Clang-спеллинг,
+     `cl.exe` молча игнорирует незнакомые "-"-флаги (не ошибка, просто ничего
+     не делает) → компилируется в до-C++17 режиме → падает на structured
+     bindings. Фикс — `.flag_if_supported(...)` с ОБЕИМИ спеллинг-парами
+     (POSIX и MSVC `/std:c++17`/`/EHsc`/`/GR`) — проверяет реальный компилятор.
+  Плюс окружение: Python на Windows был установлен только `py`-лаунчером без
+  самого интерпретатора (`python-installer.exe /quiet` тихо не долетал до
+  компонента интерпретатора при первой попытке) — переустановлен с логом,
+  реальный `python.exe` подтверждён (`Python 3.12.7`).
+  После обоих фиксов реальный CMake-конфиг Hermes проходит, Ninja+cl.exe
+  реально компилируют `hermesvm_a` (десятки .cpp-файлов) — сборка идёт на
+  момент последней проверки, ещё не подтверждена сборка ДО конца (первая
+  полная компиляция Hermes на MSVC — заведомо долгая, десятки минут).

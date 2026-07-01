@@ -3,11 +3,26 @@
 //! functions (`host`) a JS-side `react-reconciler` host-config calls into —
 //! this is where Fabric's job (mounting + Yoga layout) happens for us.
 
+pub mod dto_json;
 pub mod host;
+pub mod live_data;
 pub mod scene;
 
 pub use rusty_hermes::Runtime;
 pub use scene::Scene;
+
+/// Mirrors rn-linux's per-frame pump (drain due timers, then microtasks they
+/// produced). `ConcurrentRoot`'s initial mount schedules its commit through
+/// that same path instead of completing inline inside a single `eval()` call
+/// (unlike the old `LegacyRoot` + forced `flushSync` setup) — tests that load
+/// the real bundle need to pump a few frames before the scene tree exists.
+#[cfg(test)]
+fn pump_frames(rt: &Runtime, count: u32) {
+    for _ in 0..count {
+        rt.eval("if (typeof __scDrainTimers === 'function') __scDrainTimers();").expect("drain timers failed");
+        rt.drain_microtasks().expect("drain microtasks failed");
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -80,6 +95,10 @@ mod bundle_test {
         ))
         .unwrap_or_else(|e| panic!("read js/dist/bundle.js: {e} (run `pnpm build` in js/)"));
         rt.eval(&bundle).expect("bundle JS failed");
+        // ConcurrentRoot schedules its initial commit through the same
+        // deferred-timer path as any other update — it doesn't complete
+        // inline within the `eval()` call above. See `pump_frames`.
+        super::pump_frames(&rt, 10);
 
         super::host::with_scene(|scene| {
             let root = scene.root.expect("bundle should have set a scene root");
@@ -108,6 +127,9 @@ mod reanimated_test {
         ))
         .unwrap_or_else(|e| panic!("read js/dist/bundle.js: {e} (run `pnpm build` in js/)"));
         rt.eval(&bundle).expect("bundle JS failed");
+        // ConcurrentRoot's initial commit needs a frame pump too — see
+        // `pump_frames` and `bundle_test`.
+        super::pump_frames(&rt, 10);
 
         let badge_width = |rt: &super::Runtime| -> f32 {
             rt.eval("if (typeof __reanimatedTick === 'function') __reanimatedTick();").expect("tick failed");
@@ -152,6 +174,9 @@ mod fills_arbitrary_aspect_ratio_test {
         ))
         .unwrap_or_else(|e| panic!("read js/dist/bundle.js: {e} (run `pnpm build` in js/)"));
         rt.eval(&bundle).expect("bundle JS failed");
+        // ConcurrentRoot's initial commit needs a frame pump too — see
+        // `pump_frames` and `bundle_test`.
+        super::pump_frames(&rt, 10);
 
         let (width, height) = (847, 1388);
         let image_info = skia_safe::ImageInfo::new_n32_premul((width, height), None);
@@ -209,5 +234,95 @@ mod hermes_for_of_let_closure_bug_test {
             r#"{"firstFnType":"string","firstFnValue":"1.2.3"}"#,
             "if this ever reads back as a function, the Hermes bug is fixed — go remove the build.mjs __copyProps patch",
         );
+    }
+}
+
+/// Spike 7b: proves the whole async round-trip actually works — JS calls a
+/// host function with a callback id, `sc_rn::auth_status()` runs to
+/// completion on `live_data`'s background tokio runtime, and its result
+/// reaches JS as a resolved Promise value, entirely through the same
+/// `deliver()` polling rn-linux's render loop uses (no test-only shortcut).
+#[cfg(test)]
+mod live_data_test {
+    use std::thread::sleep;
+    use std::time::Duration;
+
+    #[test]
+    fn auth_status_round_trips_through_the_real_async_bridge() {
+        let rt = super::Runtime::new().expect("failed to create Hermes runtime");
+        super::host::install(&rt).expect("failed to install host functions");
+
+        let tmp = std::env::temp_dir().join(format!("sc-rn-live-data-test-{}", std::process::id()));
+        let data_dir = tmp.join("data");
+        let cache_dir = tmp.join("cache");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        std::fs::create_dir_all(&cache_dir).expect("create cache dir");
+
+        let init_err = rt
+            .eval(&format!(
+                "__scInitCore({:?}, {:?}, false)",
+                data_dir.to_str().unwrap(),
+                cache_dir.to_str().unwrap(),
+            ))
+            .expect("init eval failed")
+            .into_string()
+            .expect("init_core returns a string")
+            .to_rust_string()
+            .expect("valid utf8");
+        assert_eq!(init_err, "", "sc-rn init_runtime failed: {init_err}");
+
+        rt.eval(
+            r#"
+            globalThis.__testDone = false;
+            globalThis.__testOk = null;
+            globalThis.__testPayload = null;
+            globalThis.__scDeliverResult = function (id, ok, payload) {
+                globalThis.__testDone = true;
+                globalThis.__testOk = ok;
+                globalThis.__testPayload = payload;
+            };
+            __scAuthStatus(1);
+            "#,
+        )
+        .expect("eval failed");
+
+        // Mirrors rn-linux's render loop: poll `deliver()` once per "frame"
+        // instead of blocking on the background runtime directly.
+        for _ in 0..200 {
+            super::live_data::deliver(&rt);
+            let done = rt.eval("globalThis.__testDone").expect("poll eval failed").as_bool().unwrap_or(false);
+            if done {
+                break;
+            }
+            sleep(Duration::from_millis(25));
+        }
+
+        let done = rt.eval("globalThis.__testDone").expect("poll eval failed").as_bool().unwrap_or(false);
+        assert!(done, "auth_status() should have resolved or rejected within 5s");
+
+        let ok = rt.eval("globalThis.__testOk").expect("poll eval failed").as_bool().expect("ok should be a bool");
+        assert!(ok, "auth_status() should succeed with a fresh, empty data dir (no error expected)");
+
+        let payload = rt
+            .eval("JSON.stringify(globalThis.__testPayload)")
+            .expect("stringify failed")
+            .into_string()
+            .expect("result should be a string")
+            .to_rust_string()
+            .expect("valid utf8");
+        let payload: serde_json::Value = serde_json::from_str(&payload).expect("payload should be valid JSON");
+        assert_eq!(
+            payload,
+            serde_json::json!({
+                "hasSession": false,
+                "authenticated": false,
+                "sessionId": null,
+                "username": null,
+                "tokenState": null,
+            }),
+            "a fresh sc-rn runtime with no stored session should report has_session=false",
+        );
+
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }

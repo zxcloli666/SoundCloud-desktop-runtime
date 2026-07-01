@@ -8,3 +8,10 @@ license = "MIT"
 
 [profile.release]
 lto = true
+
+# sc-rn: plain sibling-repo path dep for now, not the git+[patch] pattern
+# Desktop/app and Mobile/app use (see Core/CLAUDE.md) — that pattern needs
+# Core's remote to actually have this crate pushed, and right now Core's
+# GitHub repo is stuck at its very first commit with everything else (this
+# crate included) sitting uncommitted in the local working tree. Switch back
+# to git+[patch] once Core commits/pushes shared/crates/sc-rn for real.
