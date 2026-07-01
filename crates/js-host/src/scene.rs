@@ -93,6 +93,19 @@ struct LayoutPaint {
     radii: CornerRadii,
     border_width: f32,
     border_color: Option<[f32; 4]>,
+    shadow: Option<ViewShadow>,
+}
+
+/// RN's iOS-style View shadow (`shadowColor`/`shadowOpacity`/`shadowRadius`/
+/// `shadowOffset` — `@sc/ui`'s `Avatar` ring glow and `Button`'s primary-variant
+/// glow both depend on this). `elevation` (Android) isn't handled separately:
+/// `@sc/ui` always sets both together, and the shadow* props already carry
+/// everything needed to draw one.
+#[derive(Clone, Copy)]
+struct ViewShadow {
+    color: [f32; 4],
+    radius: f32,
+    offset: (f32, f32),
 }
 
 impl Default for CornerRadii {
@@ -231,6 +244,17 @@ pub struct StyleInput {
     pub border_bottom_right_radius: Option<f32>,
     pub border_width: Option<f32>,
     pub border_color: Option<Json>,
+
+    pub shadow_color: Option<Json>,
+    pub shadow_opacity: Option<f32>,
+    pub shadow_radius: Option<f32>,
+    pub shadow_offset: Option<ShadowOffset>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ShadowOffset {
+    pub width: f32,
+    pub height: f32,
 }
 
 #[derive(Default)]
@@ -347,6 +371,15 @@ impl Scene {
         }
         if let Some(bc) = &style.border_color {
             node.paint.border_color = parse_color(bc);
+        }
+        if style.shadow_color.is_some() || style.shadow_opacity.is_some() || style.shadow_radius.is_some() || style.shadow_offset.is_some() {
+            let mut color = style.shadow_color.as_ref().and_then(parse_color).unwrap_or([0.0, 0.0, 0.0, 1.0]);
+            // RN multiplies shadowColor's own alpha by shadowOpacity, rather
+            // than one replacing the other.
+            color[3] *= style.shadow_opacity.unwrap_or(1.0);
+            let radius = style.shadow_radius.unwrap_or(0.0);
+            let offset = style.shadow_offset.as_ref().map(|o| (o.width, o.height)).unwrap_or((0.0, 0.0));
+            node.paint.shadow = Some(ViewShadow { color, radius, offset });
         }
 
         let Some(yoga) = node.yoga.as_mut() else {
@@ -553,7 +586,7 @@ impl Scene {
     }
 
     fn draw_layout_node(&self, id: NodeId, parent_x: f32, parent_y: f32, canvas: &Canvas, font: &Font) {
-        let (x, y, w, h, text, is_canvas, children, background, opacity, overflow_hidden, radii, border_width, border_color) = {
+        let (x, y, w, h, text, is_canvas, children, background, opacity, overflow_hidden, radii, border_width, border_color, shadow) = {
             let node = self.nodes.get(&id).expect("unknown node id").borrow();
             let yoga = node.yoga.as_ref().expect("draw_layout_node on a non-layout node");
             let x = parent_x + yoga.get_layout_left();
@@ -579,6 +612,7 @@ impl Scene {
                 node.paint.radii,
                 node.paint.border_width,
                 node.paint.border_color,
+                node.paint.shadow,
             )
         };
 
@@ -590,6 +624,20 @@ impl Scene {
             canvas.save_layer(&SaveLayerRec::default().paint(&layer_paint));
         } else {
             canvas.save();
+        }
+
+        // Drawn before the fill, same as Skia `BoxShadow` (`draw_box_shadow`):
+        // `drop_shadow`'s filtered draw includes a copy of the source shape
+        // itself, which the real fill right below then exactly covers,
+        // leaving only the blurred halo visible past the shape's edges.
+        if let Some(shadow) = shadow {
+            let sk_color = Color4f::new(shadow.color[0], shadow.color[1], shadow.color[2], shadow.color[3]).to_color();
+            if let Some(filter) = image_filters::drop_shadow(shadow.offset, (shadow.radius, shadow.radius), sk_color, None, None, None) {
+                let mut paint = Paint::new(Color4f::new(shadow.color[0], shadow.color[1], shadow.color[2], shadow.color[3]), None);
+                paint.set_anti_alias(true);
+                paint.set_image_filter(filter);
+                canvas.draw_rrect(radii.rrect(rect), &paint);
+            }
         }
 
         if let Some([r, g, b, a]) = background {
