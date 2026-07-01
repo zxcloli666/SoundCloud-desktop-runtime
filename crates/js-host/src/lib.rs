@@ -323,6 +323,40 @@ mod live_data_test {
             "a fresh sc-rn runtime with no stored session should report has_session=false",
         );
 
+        // `home_clusters`/`wave`/`resolve_tracks` need real auth/network and
+        // will legitimately fail unauthenticated — this isn't asserting they
+        // succeed, just that their callback_id plumbing and `dto_json`
+        // builders don't panic or hang on a second, concurrent in-flight
+        // call multiplexed through the same `deliver()` channel.
+        rt.eval(
+            r#"
+            globalThis.__testDone2 = false;
+            __scHomeClusters(2, 5, JSON.stringify([]), false);
+            "#,
+        )
+        .expect("eval failed");
+        rt.eval(
+            r#"
+            var __origDeliver = globalThis.__scDeliverResult;
+            globalThis.__scDeliverResult = function (id, ok, payload) {
+                if (id === 2) { globalThis.__testDone2 = true; return; }
+                __origDeliver(id, ok, payload);
+            };
+            "#,
+        )
+        .expect("eval failed");
+
+        for _ in 0..200 {
+            super::live_data::deliver(&rt);
+            let done = rt.eval("globalThis.__testDone2").expect("poll eval failed").as_bool().unwrap_or(false);
+            if done {
+                break;
+            }
+            sleep(Duration::from_millis(25));
+        }
+        let done2 = rt.eval("globalThis.__testDone2").expect("poll eval failed").as_bool().unwrap_or(false);
+        assert!(done2, "home_clusters() should have resolved or rejected within 5s, not hung");
+
         std::fs::remove_dir_all(&tmp).ok();
     }
 }
