@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/skia-desktop", "crates/rn-linux"]
+members = ["crates/skia-desktop", "crates/rn-linux", "crates/js-host"]
 
 [workspace.package]
 edition = "2021"

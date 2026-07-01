@@ -8,7 +8,11 @@ react-native-skia` не существует. ТЗ: `Core/docs/DESKTOP_RUNTIME_T
 Desktop-Runtime/
   crates/skia-desktop/   GPU-Skia surface (skia-safe + winit/glutin), общий
                          для Linux-хоста и будущего Windows-бэкенда
-  crates/rn-linux/       RN-host для Linux (окно, event loop, JS-движок)
+  crates/js-host/        Hermes (rusty_hermes) + сцена-дерево (реальная Yoga)
+                         + host-функции для JS; сюда же ляжет react-reconciler
+                         host-config и JSI-биндинги react-native-skia/reanimated
+  crates/rn-linux/       бинарь: winit-окно + event loop, склеивает
+                         skia-desktop и js-host
 ```
 
 ## Архитектура (решено 2026-07-01, не Fabric C++ от Meta)
@@ -37,13 +41,29 @@ Desktop-Runtime/
 
 ## Состояние
 
-Спайк 2 (`Core/docs/DESKTOP_RUNTIME_TZ.md`, этап 2) готов и проверен: winit-окно
-+ skia-safe GPU-surface (OpenGL через glutin) рисует статичную сцену
-(блюр-орбы + стеклянная панель) на Linux. `GlWindowSurface::snapshot_png()` —
-readback кадра в PNG для headless-проверки (компоузер может держать другое
-окно поверх, тогда экранный скриншот не покажет наше).
+Спайки 2-4 (`Core/docs/DESKTOP_RUNTIME_TZ.md`) готовы и проверены на Linux:
 
-Дальше — Hermes+JSI, Yoga-эмбед, `react-reconciler` host-config, JSI-биндинги
-под `@shopify/react-native-skia`/`reanimated`, затем sc-rn TurboModule и живые
-экраны `@sc/ui`. Windows-путь (RN-Windows + Skia-порт) — после/параллельно,
-через `winbuild` (podman-windows, VS BuildTools уже стоит).
+- **Спайк 2**: winit-окно + skia-safe GPU-surface (OpenGL через glutin) рисует
+  статичную сцену на Linux. `GlWindowSurface::snapshot_png()` — readback кадра
+  в PNG для headless-проверки (компоузер может держать другое окно поверх,
+  тогда экранный скриншот не покажет наше — используй снапшот).
+- **Спайк 3**: Hermes встроен через `rusty_hermes` (собирается из исходников,
+  ~8 мин; git-зависимость, не на crates.io). Тест `js-host`: JS вызывает
+  host-функцию и получает результат обратно.
+- **Спайк 4**: `js_host::scene::Scene` — дерево из `__scCreateView`/
+  `__scCreateText`/`__scAppendChild`/`__scSetStyle` (JSON-пропы), геометрия —
+  настоящая `yoga` (crate `yoga` = bschwind/yoga-rs, C++ Facebook Yoga,
+  собирается системным g++/libstdc++, libc++-dev из README не понадобился).
+  `rn-linux` вызывает Hermes-JS, строящий дерево, считает layout под размер
+  окна и рисует через `skia-desktop`. **Грабля**: `skia_safe::Font::default()`
+  даёт typeface с 0 глифов (пустой) — реальный шрифт только через
+  `FontMgr::default().legacy_make_typeface(None, FontStyle::default())`
+  (в этой сборке резолвится в "Noto Sans", 708 семейств видит fontconfig).
+  Ещё не react-reconciler — дерево строит рукописный JS напрямую через
+  host-функции; сам react-reconciler на этих же host-функциях — следующий шаг.
+
+Дальше — `react-reconciler` host-config поверх готовых host-функций (спайк 4b),
+JSI-биндинги под `@shopify/react-native-skia`/`reanimated` (спайк 5-6), затем
+sc-rn TurboModule и живые экраны `@sc/ui` (спайк 7). Windows-путь (RN-Windows +
+Skia-порт) — после/параллельно, через `winbuild` (podman-windows, VS BuildTools
+уже стоит).

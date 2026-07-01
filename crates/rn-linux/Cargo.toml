@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+js-host = { version = "0.1.0", path = "../js-host" }
 skia-desktop = { version = "0.1.0", path = "../skia-desktop" }
 skia-safe = { version = "0.99.0", features = ["gl"] }
 winit = "0.30.13"
