@@ -13,7 +13,8 @@ Desktop-Runtime/
                          react-native-skia/reanimated
   crates/rn-linux/       бинарь: winit-окно + event loop, склеивает
                          skia-desktop и js-host
-  js/                    react-reconciler host-config + тестовое дерево,
+  js/                    react-reconciler host-config + react-native-skia-
+                         совместимые примитивы (rnskia.tsx) + тестовое дерево,
                          esbuild → dist/bundle.js (`pnpm build`), которое
                          rn-linux грузит и eval'ит в Hermes
 ```
@@ -88,7 +89,32 @@ Fabric C++:
     reanimated, вероятно, расчитывает на конкурентную семантику скорее, чем
     "legacy" — не проблема качества кода, просто имя режима реконсилера.
 
-Дальше — JSI-биндинги под `@shopify/react-native-skia`/`reanimated` (спайк
-5-6), затем sc-rn TurboModule и живые экраны `@sc/ui` (спайк 7). Windows-путь
-(RN-Windows + Skia-порт) — после/параллельно, через `winbuild` (podman-windows,
-VS BuildTools уже стоит).
+- **Спайк 5**: `@shopify/react-native-skia` даёт `<Canvas>` как настоящий
+  Fabric native-component + СВОЙ ВНУТРЕННИЙ `react-reconciler` (persistent-mode,
+  `src/sksg/`), который строит `SkPicture` и отдаёт нативному view через
+  `global.SkiaViewApi.setJsiProperty(nativeId, "picture", pic)` — это оправдано
+  для их кросс-платформенности (Android/iOS/web), но мы владеем всем pipeline,
+  так что **не повторяем два-реконсилера-архитектуру**: `Canvas`/`Group`/
+  `Circle`/`Rect`/`RoundedRect`/`Blur`/`RadialGradient`/`LinearGradient`/`Box`/
+  `BoxShadow` — просто новые типы узлов в НАШЕМ ОДНОМ дереве
+  (`js-host/src/scene.rs`), без Yoga (как в реальной библиотеке — позиционируются
+  в пиксельных координатах внутри ближайшего `Canvas`, не флексбоксом). Gradient/
+  Blur-дети конфигурируют Paint родительской фигуры, а не рисуются сами.
+  `js/src/rnskia.tsx` — JS-шим с тем же экспортом (+ `vec`/`rect`/`rrect`
+  геометрия, `useClock` — заглушка до спайка 6). Полный набор — по грепу
+  реального usage в `@sc/ui` (`Core/ui/src/primitives/{Atmosphere,Waveform,
+  GlassSurface}.tsx` — только они используют Skia/Reanimated из всех 25 файлов
+  пакета; императивного `Skia.*`-API/Path/Shader/Image/skia-текста НЕТ вообще).
+  **Известное упрощение**: `color`-пропы — только `[r,g,b,a]`-массивы (как
+  `backgroundColor`), НЕ CSS-строки (`"#fff"`/`"rgba(...)"`), которые принимает
+  настоящий `Skia.Color()` — парсер CSS-цветов нужен до спайка 7 (реальный
+  `@sc/ui` передаёт цвета из темы, вероятно строками).
+  **Мелкая грабля**: esbuild's `jsx:'automatic'` вместе с `NODE_ENV=development`
+  даёт `jsxDEV`-вызовы с безобидным `console.error` про "Static children should
+  be an array" — не блокирует рендер, не нашёл чистого фикса без потери
+  dev-ошибок react-reconciler, оставлено как есть.
+
+Дальше — reanimated worklets + sc-rn TurboModule (спайк 6), живые экраны
+`@sc/ui` на бандлер-алиасе `@shopify/react-native-skia`→`rnskia.tsx` (спайк 7).
+Windows-путь (RN-Windows + Skia-порт) — после/параллельно, через `winbuild`
+(podman-windows, VS BuildTools уже стоит).

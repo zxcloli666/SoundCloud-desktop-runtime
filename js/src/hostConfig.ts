@@ -4,10 +4,28 @@
 // react-reconciler, not Meta's Fabric C++ (see Desktop-Runtime/CLAUDE.md).
 declare const __scCreateView: () => number;
 declare const __scCreateText: (text: string) => number;
+declare const __scCreateSkNode: (kind: string) => number;
 declare const __scAppendChild: (parent: number, child: number) => void;
 declare const __scRemoveChild: (parent: number, child: number) => void;
 declare const __scSetStyle: (id: number, styleJson: string) => void;
+declare const __scSetSkProps: (id: number, propsJson: string) => void;
 declare const __scSetRoot: (id: number) => void;
+
+// Everything except View/Text/Canvas is a Skia draw node (js-host/src/scene.rs)
+// — no Yoga, raw props instead of flexbox style. Canvas itself IS a layout
+// node (it's sized by flex like any View) but its *kind* on the Rust side is
+// still "Canvas" so Scene knows its children are a Skia subtree, not more Views.
+const SK_DRAW_TYPES = new Set([
+  'Circle',
+  'Rect',
+  'RoundedRect',
+  'Group',
+  'Blur',
+  'RadialGradient',
+  'LinearGradient',
+  'Box',
+  'BoxShadow',
+]);
 
 import { DefaultEventPriority } from 'react-reconciler/constants';
 
@@ -26,6 +44,11 @@ type Container = { rootId: Instance | null };
 
 function applyStyle(id: Instance, props: ViewProps): void {
   __scSetStyle(id, JSON.stringify(props.style ?? {}));
+}
+
+function applySkProps(id: Instance, props: Record<string, unknown>): void {
+  const { children: _children, ...rest } = props;
+  __scSetSkProps(id, JSON.stringify(rest));
 }
 
 // React 18+ added priority tracking to the host config (not in react-reconciler's
@@ -53,10 +76,22 @@ export const hostConfig = {
   resolveUpdatePriority: () => currentUpdatePriority || DefaultEventPriority,
 
   createInstance(type: string, props: ViewProps): Instance {
-    if (type !== 'View') throw new Error(`unknown host type: ${type}`);
-    const id = __scCreateView();
-    applyStyle(id, props);
-    return id;
+    if (type === 'View') {
+      const id = __scCreateView();
+      applyStyle(id, props);
+      return id;
+    }
+    if (type === 'Canvas') {
+      const id = __scCreateSkNode('Canvas');
+      applyStyle(id, props);
+      return id;
+    }
+    if (SK_DRAW_TYPES.has(type)) {
+      const id = __scCreateSkNode(type);
+      applySkProps(id, props as Record<string, unknown>);
+      return id;
+    }
+    throw new Error(`unknown host type: ${type}`);
   },
 
   createTextInstance(text: string): TextInstance {
@@ -148,8 +183,12 @@ export const hostConfig = {
     if (container.rootId === child) container.rootId = null;
   },
 
-  commitUpdate(instance: Instance, _type: string, _prevProps: ViewProps, nextProps: ViewProps): void {
-    applyStyle(instance, nextProps);
+  commitUpdate(instance: Instance, type: string, _prevProps: ViewProps, nextProps: ViewProps): void {
+    if (type === 'View' || type === 'Canvas') {
+      applyStyle(instance, nextProps);
+    } else {
+      applySkProps(instance, nextProps as Record<string, unknown>);
+    }
   },
 
   commitTextUpdate(): void {

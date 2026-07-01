@@ -30,6 +30,18 @@ fn create_text(text: String) -> u32 {
     SCENE.with(|s| s.borrow_mut().create_text(text))
 }
 
+#[hermes_op(name = "__scCreateSkNode")]
+fn create_sk_node(kind: String) -> u32 {
+    SCENE.with(|s| s.borrow_mut().create_sk_node(&kind))
+}
+
+#[hermes_op(name = "__scSetSkProps")]
+fn set_sk_props(id: u32, props_json: String) {
+    let props: serde_json::Value = serde_json::from_str(&props_json)
+        .unwrap_or_else(|e| panic!("invalid Skia node props JSON for node {id}: {e}"));
+    SCENE.with(|s| s.borrow_mut().set_sk_props(id, props));
+}
+
 #[hermes_op(name = "__scAppendChild")]
 fn append_child(parent: u32, child: u32) {
     SCENE.with(|s| s.borrow_mut().append_child(parent, child));
@@ -86,6 +98,8 @@ globalThis.console = {
 pub fn install(rt: &Runtime) -> rusty_hermes::Result<()> {
     create_view::register(rt)?;
     create_text::register(rt)?;
+    create_sk_node::register(rt)?;
+    set_sk_props::register(rt)?;
     append_child::register(rt)?;
     remove_child::register(rt)?;
     set_style::register(rt)?;

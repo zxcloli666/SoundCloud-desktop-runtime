@@ -5,12 +5,13 @@ import * as esbuild from 'esbuild';
 // elimination strips react/react-reconciler's production-vs-development
 // branches at bundle time; Hermes never needs a `process` global at runtime.
 await esbuild.build({
-  entryPoints: ['src/index.ts'],
+  entryPoints: ['src/index.tsx'],
   bundle: true,
   outfile: 'dist/bundle.js',
   format: 'iife',
   platform: 'neutral',
   target: 'es2020',
+  jsx: 'automatic',
   define: { 'process.env.NODE_ENV': '"development"' },
 });
 
