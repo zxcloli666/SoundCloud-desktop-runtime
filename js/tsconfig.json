@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM"],
+    "jsx": "react-jsx",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "paths": {
+      "react-native": ["./src/react-native.tsx"],
+      "@shopify/react-native-skia": ["./src/rnskia.tsx"],
+      "react-native-reanimated": ["./src/reanimated.tsx"],
+      "@sc/ui": ["../../Core/ui/src/index.ts"]
+    }
+  },
+  "include": ["src", "../../Core/ui/src"]
+}

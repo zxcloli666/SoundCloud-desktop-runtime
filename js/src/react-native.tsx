@@ -9,7 +9,39 @@
 // those components render correctly but don't yet respond to input.
 import React from 'react';
 
-type Props = Record<string, unknown> & { children?: React.ReactNode; style?: unknown };
+// Type-only exports `@sc/ui` imports from 'react-native' — esbuild erases
+// `import type` before module resolution, so a missing export here is
+// invisible until something actually typechecks `js/` against these shims
+// (no tsconfig/typecheck step exists yet). Kept loose (not the real
+// packages' precise shapes) since nothing here affects runtime behavior.
+export type StyleProp<T> = T | StyleProp<T>[] | null | undefined | false;
+export type ViewStyle = Record<string, unknown>;
+export type TextStyle = Record<string, unknown>;
+export interface TextProps {
+  style?: StyleProp<TextStyle>;
+  numberOfLines?: number;
+  children?: React.ReactNode;
+}
+export interface LayoutChangeEvent {
+  nativeEvent: { layout: { x: number; y: number; width: number; height: number } };
+}
+export interface GestureResponderEvent {
+  nativeEvent: { locationX: number; locationY: number; pageX: number; pageY: number };
+}
+
+// Deliberately no `Record<string, unknown>` wildcard here (tried it, kept
+// it consistent — with one, TypeScript can no longer contextually infer
+// callback parameter types like `onLayout`'s `event` at JSX call sites,
+// silently falling back to implicit `any` instead of erroring, which is
+// worse than just not modeling a prop `@sc/ui` doesn't currently use).
+// Extend this list as real usage needs more (accessibility props, testID,
+// hitSlop, ...) rather than reaching for a blanket index signature again.
+type Props = {
+  children?: React.ReactNode;
+  style?: unknown;
+  onLayout?: (event: LayoutChangeEvent) => void;
+  testID?: string;
+};
 
 export const View = React.forwardRef<number, Props>((props, ref) =>
   React.createElement('View', { ...props, ref }),
@@ -21,16 +53,16 @@ export const Text = React.forwardRef<number, Props>((props, ref) =>
 
 // No asset-decoding pipeline yet (spike 7+ follow-up) — renders as an empty
 // box sized/styled like the real component so layouts don't collapse.
-export const Image = React.forwardRef<number, Props & { source?: unknown }>((props, ref) => {
-  const { source: _source, ...rest } = props;
+export const Image = React.forwardRef<number, Props & { source?: unknown; resizeMode?: 'cover' | 'contain' | 'stretch' | 'center' | 'repeat' }>((props, ref) => {
+  const { source: _source, resizeMode: _resizeMode, ...rest } = props;
   return React.createElement('View', { ...rest, ref });
 });
 
 type PressableProps = Props & {
-  onPress?: () => void;
-  onPressIn?: () => void;
-  onPressOut?: () => void;
-  onLongPress?: () => void;
+  onPress?: (event: GestureResponderEvent) => void;
+  onPressIn?: (event: GestureResponderEvent) => void;
+  onPressOut?: (event: GestureResponderEvent) => void;
+  onLongPress?: (event: GestureResponderEvent) => void;
 };
 
 // Renders correctly today; doesn't yet fire on*Press (no pointer-event
@@ -44,14 +76,34 @@ export const TouchableOpacity = Pressable;
 export const TouchableHighlight = Pressable;
 export const TouchableWithoutFeedback = Pressable;
 
-// Applies `overflow: hidden` like the real component's clipsToBounds default;
-// scroll position/gestures are a later input-plumbing follow-up.
-export const ScrollView = React.forwardRef<number, Props>((props, ref) => {
-  const style = props.style as Record<string, unknown> | undefined;
+type ScrollViewProps = Props & {
+  horizontal?: boolean;
+  contentContainerStyle?: unknown;
+  showsHorizontalScrollIndicator?: boolean;
+  showsVerticalScrollIndicator?: boolean;
+  decelerationRate?: 'normal' | 'fast' | number;
+  snapToInterval?: number;
+  snapToAlignment?: 'start' | 'center' | 'end';
+  onScroll?: (event: { nativeEvent: { contentOffset: { x: number; y: number } } }) => void;
+};
+
+// Applies `overflow: hidden` like the real component's clipsToBounds
+// default, and lays children out `flexDirection: row` when `horizontal` —
+// `contentContainerStyle` (real RN applies it to an inner wrapper View
+// around the content, separate from `style` on the outer scroll clip
+// container — `HorizontalScroll`'s gap/edge-padding lives there) is honored
+// the same way. Scroll position/gestures are a later input-plumbing
+// follow-up — this never moves yet.
+export const ScrollView = React.forwardRef<number, ScrollViewProps>((props, ref) => {
+  const { style, contentContainerStyle, horizontal, children, ...rest } = props;
   return React.createElement(
     'View',
-    { ...props, style: { ...style, overflow: 'hidden' }, ref },
-    props.children as React.ReactNode,
+    { style: [style, { overflow: 'hidden' }], ref },
+    React.createElement(
+      'View',
+      { style: [contentContainerStyle, horizontal ? { flexDirection: 'row' } : null], ...rest },
+      children as React.ReactNode,
+    ),
   );
 });
 
@@ -193,11 +245,6 @@ export const Linking = {
   canOpenURL: async (_url: string) => true,
   addEventListener: () => ({ remove: () => {} }),
 };
-
-// Matches real RN's `StyleProp<T>` shape: arrays nest (`style={[base, cond &&
-// override]}` is common), and falsy entries (`false`/`null`/`undefined`, from
-// `cond && style`) are valid and simply contribute nothing.
-export type StyleProp<T> = T | StyleProp<T>[] | null | undefined | false;
 
 export const StyleSheet = {
   create<T extends Record<string, unknown>>(styles: T): T {

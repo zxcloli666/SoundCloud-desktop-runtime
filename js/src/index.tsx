@@ -2,7 +2,7 @@
 // '@shopify/react-native-skia' / 'react-native-reanimated' — resolved at
 // bundle time (build.mjs `alias`) to our shims instead of the real native
 // modules. `Atmosphere` below is @sc/ui's own component, not a local copy.
-import { Atmosphere, Avatar, Button, Card, SectionHeader, ThemeProvider, TrackRow } from '@sc/ui';
+import { Atmosphere, Avatar, Button, Card, HorizontalScroll, SectionHeader, ThemeProvider, TrackRow } from '@sc/ui';
 import React from 'react';
 import Reconciler from 'react-reconciler';
 import { ConcurrentRoot } from 'react-reconciler/constants';
@@ -132,6 +132,13 @@ function CoreUiProbe() {
       </View>
       <Card title="Тестовый трек" subtitle="Тестовый артист" width={140} onPress={() => {}} />
       <TrackRow index={0} title="Первый трек" artist="Артист" durationMs={183000} active onPress={() => {}} />
+      {/* Exercises ScrollView's contentContainerStyle (gap/edge padding) —
+          previously silently dropped (only `style` was read). */}
+      <HorizontalScroll gap={12} edge={16}>
+        <Card title="Карточка A" width={100} />
+        <Card title="Карточка B" width={100} />
+        <Card title="Карточка C" width={100} />
+      </HorizontalScroll>
     </View>
   );
 }

@@ -291,8 +291,10 @@ export function cancelAnimation(sharedValue: SharedValue<unknown>): void {
 }
 
 /** Recomputed on every read — cheap arithmetic over shared values, no
- * dependency tracking needed (see module doc comment). */
-export function useDerivedValue<T>(fn: () => T): SharedValue<T> {
+ * dependency tracking needed (see module doc comment). `deps` is real
+ * reanimated's API shape (`@sc/ui`'s `Atmosphere`/`Waveform` pass one) but
+ * unused here for the same reason — always-fresh already covers it. */
+export function useDerivedValue<T>(fn: () => T, _deps?: unknown[]): SharedValue<T> {
   const fnRef = React.useRef(fn);
   fnRef.current = fn;
   const holder = React.useRef<{ readonly value: T } | null>(null);
@@ -350,7 +352,7 @@ export function runOnUI<A extends unknown[], R>(fn: (...args: A) => R): (...args
 }
 export const runOnJS = runOnUI;
 
-export function useAnimatedStyle(fn: () => Record<string, unknown>): () => Record<string, unknown> {
+export function useAnimatedStyle(fn: () => Record<string, unknown>, _deps?: unknown[]): () => Record<string, unknown> {
   const fnRef = React.useRef(fn);
   fnRef.current = fn;
   // Identity must stay stable across renders — `Animated.View` below keys its
@@ -371,12 +373,17 @@ export const useAnimatedProps = useAnimatedStyle;
 // every tick, so this just needs to pass the array through unchanged instead
 // of spreading it as if it were a plain object (which produced numeric-index
 // garbage keys, silently dropping every real style property).
-export function createAnimatedComponent<P extends { style?: unknown }>(
-  Component: React.ComponentType<P>,
-): React.ComponentType<P & { animatedProps?: () => Record<string, unknown> }> {
+export function createAnimatedComponent<C extends React.ComponentType<{ style?: unknown }>>(
+  Component: C,
+): React.ComponentType<React.ComponentProps<C> & { animatedProps?: () => Record<string, unknown> }> {
+  type P = React.ComponentProps<C>;
+  // JSX only typechecks a generic component variable against its
+  // constraint bound (`{ style?: unknown }`), not the wider inferred `C` —
+  // recast to `C`'s actual prop type for the call below.
+  const Comp = Component as unknown as React.ComponentType<P>;
   return function AnimatedComponent({ animatedProps, style, ...rest }: P & { animatedProps?: () => Record<string, unknown> }) {
     const mergedStyle = animatedProps ? [style, animatedProps] : style;
-    return <Component {...(rest as P)} style={mergedStyle} />;
+    return <Comp {...(rest as P)} style={mergedStyle} />;
   };
 }
 

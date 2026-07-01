@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "build": "node build.mjs"
+    "build": "node build.mjs",
+    "typecheck": "tsc"
   },
   "dependencies": {
     "@sc/ui": "^0.1.0",
@@ -12,8 +13,9 @@
     "react-reconciler": "^0.32.0"
   },
   "devDependencies": {
-    "esbuild": "^0.25.0",
     "@types/react": "19.2.3",
-    "@types/react-reconciler": "^0.28.9"
+    "@types/react-reconciler": "^0.28.9",
+    "esbuild": "^0.25.0",
+    "typescript": "^6.0.3"
   }
 }

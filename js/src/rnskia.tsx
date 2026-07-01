@@ -49,6 +49,23 @@ export type SkPoint = { x: number; y: number };
 export type SkRect = { x: number; y: number; width: number; height: number };
 export type SkRRect = { rect: SkRect; rx: number; ry: number };
 
+// Type-only (`@sc/ui`'s `Atmosphere.tsx` imports it for a `useDerivedValue`
+// return type) — matches real react-native-skia's shape closely enough for
+// typechecking; erased at build time either way, no runtime behavior.
+export type Transforms3d = (
+  | { perspective: number }
+  | { rotateX: number }
+  | { rotateY: number }
+  | { rotateZ: number }
+  | { scale: number }
+  | { scaleX: number }
+  | { scaleY: number }
+  | { translateX: number }
+  | { translateY: number }
+  | { skewX: number }
+  | { skewY: number }
+)[];
+
 export const vec = (x: number, y: number): SkPoint => ({ x, y });
 export const rect = (x: number, y: number, width: number, height: number): SkRect => ({
   x,
