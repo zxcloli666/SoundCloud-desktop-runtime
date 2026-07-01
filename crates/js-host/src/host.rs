@@ -69,6 +69,30 @@ fn set_root(id: u32) {
     SCENE.with(|s| s.borrow_mut().set_root(id));
 }
 
+#[hermes_op(name = "__scWatchLayout")]
+fn watch_layout(id: u32) {
+    SCENE.with(|s| s.borrow_mut().watch_layout(id));
+}
+
+#[hermes_op(name = "__scUnwatchLayout")]
+fn unwatch_layout(id: u32) {
+    SCENE.with(|s| s.borrow_mut().unwatch_layout(id));
+}
+
+/// Polled once per frame from `rn-linux`, after `compute_layout` — see
+/// `js/src/hostConfig.ts`'s `__scDispatchLayoutChanges`.
+#[hermes_op(name = "__scDrainLayoutChanges")]
+fn drain_layout_changes() -> String {
+    let changes = SCENE.with(|s| s.borrow_mut().drain_layout_changes());
+    let json = serde_json::Value::Array(
+        changes
+            .into_iter()
+            .map(|(id, x, y, width, height)| serde_json::json!({ "id": id, "x": x, "y": y, "width": width, "height": height }))
+            .collect(),
+    );
+    json.to_string()
+}
+
 #[hermes_op(name = "__scConsoleLog")]
 fn console_log(message: String) {
     println!("[js] {message}");
@@ -225,6 +249,9 @@ pub fn install(rt: &Runtime) -> rusty_hermes::Result<()> {
     remove_child::register(rt)?;
     set_style::register(rt)?;
     set_root::register(rt)?;
+    watch_layout::register(rt)?;
+    unwatch_layout::register(rt)?;
+    drain_layout_changes::register(rt)?;
     console_log::register(rt)?;
     init_core::register(rt)?;
     set_session::register(rt)?;

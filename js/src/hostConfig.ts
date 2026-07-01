@@ -11,6 +11,9 @@ declare const __scRemoveChild: (parent: number, child: number) => void;
 declare const __scSetStyle: (id: number, styleJson: string) => void;
 declare const __scSetSkProps: (id: number, propsJson: string) => void;
 declare const __scSetRoot: (id: number) => void;
+declare const __scWatchLayout: (id: number) => void;
+declare const __scUnwatchLayout: (id: number) => void;
+declare const __scDrainLayoutChanges: () => string;
 
 // Everything except View/Text/Canvas is a Skia draw node (js-host/src/scene.rs)
 // — no Yoga, raw props instead of flexbox style. Canvas itself IS a layout
@@ -39,7 +42,7 @@ const SK_DRAW_TYPES = new Set([
 
 import { DefaultEventPriority } from 'react-reconciler/constants';
 
-import type { StyleProp } from './react-native';
+import type { LayoutChangeEvent, StyleProp } from './react-native';
 
 // react-reconciler@0.32 also exports `NoEventPriority` (= 0) from this module,
 // but @types/react-reconciler is pinned to 0.28 and doesn't know about it yet.
@@ -55,6 +58,7 @@ type ViewStyleValue = StyleProp<Record<string, unknown>> | (() => Record<string,
 export type ViewProps = {
   style?: ViewStyleValue;
   children?: unknown;
+  onLayout?: (event: LayoutChangeEvent) => void;
 };
 
 type Instance = number;
@@ -93,6 +97,16 @@ function applyStyle(id: Instance, props: ViewProps): void {
   } else {
     viewAnimatedNodes.delete(id);
   }
+
+  const onLayout = props.onLayout;
+  const wasWatching = layoutListeners.has(id);
+  if (onLayout) {
+    layoutListeners.set(id, onLayout);
+    if (!wasWatching) __scWatchLayout(id);
+  } else if (wasWatching) {
+    layoutListeners.delete(id);
+    __scUnwatchLayout(id);
+  }
 }
 
 // Called from reanimated.tsx's `__reanimatedTick`, alongside
@@ -100,6 +114,25 @@ function applyStyle(id: Instance, props: ViewProps): void {
 (globalThis as Record<string, unknown>).__scRefreshAnimatedViewStyles = function scRefreshAnimatedViewStyles(): void {
   for (const [id, style] of viewAnimatedNodes) {
     __scSetStyle(id, JSON.stringify(resolveStyle(style)));
+  }
+};
+
+// id -> real RN's `onLayout` callback. `GlassSurface`/`Waveform` gate their
+// entire Canvas render on receiving this at least once (their content is
+// sized from real measured width/height, not guessed) — without it, they
+// mount but never draw anything.
+const layoutListeners = new Map<Instance, (event: LayoutChangeEvent) => void>();
+
+// Polled once per frame from rn-linux, after layout is recomputed — mirrors
+// `deliver()`/`__reanimatedTick`'s per-frame drain pattern (js-host/src/
+// live_data.rs, js/src/reanimated.tsx), rather than a push from Rust, since
+// Hermes has no way to call an arbitrary JS callback except by us reaching
+// for a known global on our own schedule.
+(globalThis as Record<string, unknown>).__scDispatchLayoutChanges = function scDispatchLayoutChanges(): void {
+  const changes = JSON.parse(__scDrainLayoutChanges()) as Array<{ id: number; x: number; y: number; width: number; height: number }>;
+  for (const c of changes) {
+    const listener = layoutListeners.get(c.id);
+    listener?.({ nativeEvent: { layout: { x: c.x, y: c.y, width: c.width, height: c.height } } });
   }
 };
 
@@ -278,6 +311,7 @@ export const hostConfig = {
     __scRemoveChild(parent, child);
     skAnimatedNodes.delete(child);
     viewAnimatedNodes.delete(child);
+    layoutListeners.delete(child);
   },
 
   removeChildFromContainer(container: Container, child: Instance): void {

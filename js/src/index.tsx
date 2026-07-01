@@ -2,7 +2,7 @@
 // '@shopify/react-native-skia' / 'react-native-reanimated' — resolved at
 // bundle time (build.mjs `alias`) to our shims instead of the real native
 // modules. `Atmosphere` below is @sc/ui's own component, not a local copy.
-import { Atmosphere, Avatar, Button, Card, HorizontalScroll, SectionHeader, ThemeProvider, TrackRow } from '@sc/ui';
+import { Atmosphere, Avatar, Button, Card, GlassSurface, HorizontalScroll, SectionHeader, ThemeProvider, TrackRow, Waveform } from '@sc/ui';
 import React from 'react';
 import Reconciler from 'react-reconciler';
 import { ConcurrentRoot } from 'react-reconciler/constants';
@@ -139,6 +139,12 @@ function CoreUiProbe() {
         <Card title="Карточка B" width={100} />
         <Card title="Карточка C" width={100} />
       </HorizontalScroll>
+      {/* Both gate their entire Canvas render on a real onLayout — without
+          it (task #15) they'd mount but draw nothing at all. */}
+      <GlassSurface style={{ width: 200, height: 80, padding: 12 }}>
+        <Text style={{ color: [1, 1, 1, 0.85] }}>Стекло</Text>
+      </GlassSurface>
+      <Waveform peaks={[0.2, 0.5, 0.8, 0.4, 0.9, 0.3, 0.6, 0.7, 0.5, 0.2]} style={{ width: 240 }} />
     </View>
   );
 }

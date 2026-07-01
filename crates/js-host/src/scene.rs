@@ -262,6 +262,9 @@ pub struct Scene {
     nodes: HashMap<NodeId, RefCell<SceneNode>>,
     next_id: NodeId,
     pub root: Option<NodeId>,
+    /// Nodes JS registered an `onLayout` listener for, with the last
+    /// geometry reported — `NAN` sentinel forces the first report.
+    watched_layouts: HashMap<NodeId, (f32, f32, f32, f32)>,
 }
 
 impl Scene {
@@ -344,6 +347,37 @@ impl Scene {
             py.remove_child(cy);
         }
         parent_node.children.retain(|id| *id != child);
+        self.watched_layouts.remove(&child);
+    }
+
+    /// Registers `id` for `onLayout` reporting — `drain_layout_changes()`
+    /// (called once per frame from rn-linux) reports it the first time and
+    /// again whenever its Yoga-computed geometry actually changes.
+    pub fn watch_layout(&mut self, id: NodeId) {
+        self.watched_layouts.entry(id).or_insert((f32::NAN, f32::NAN, f32::NAN, f32::NAN));
+    }
+
+    pub fn unwatch_layout(&mut self, id: NodeId) {
+        self.watched_layouts.remove(&id);
+    }
+
+    /// `(id, left, top, width, height)` for every watched node whose layout
+    /// changed since the last call — relative to its parent, matching real
+    /// RN's `onLayout` (`x`/`y` aren't meant for absolute positioning there
+    /// either).
+    pub fn drain_layout_changes(&mut self) -> Vec<(NodeId, f32, f32, f32, f32)> {
+        let mut changes = Vec::new();
+        for (&id, last) in self.watched_layouts.iter_mut() {
+            let Some(node_cell) = self.nodes.get(&id) else { continue };
+            let node = node_cell.borrow();
+            let Some(yoga) = node.yoga.as_ref() else { continue };
+            let current = (yoga.get_layout_left(), yoga.get_layout_top(), yoga.get_layout_width(), yoga.get_layout_height());
+            if current != *last {
+                *last = current;
+                changes.push((id, current.0, current.1, current.2, current.3));
+            }
+        }
+        changes
     }
 
     pub fn set_style(&mut self, id: NodeId, style: StyleInput) {

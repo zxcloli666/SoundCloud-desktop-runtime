@@ -20,6 +20,7 @@ const BUNDLE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../js/dist/bu
 
 const TICK_JS: &str = "if (typeof __reanimatedTick === 'function') __reanimatedTick();";
 const DRAIN_TIMERS_JS: &str = "if (typeof __scDrainTimers === 'function') __scDrainTimers();";
+const DISPATCH_LAYOUT_JS: &str = "if (typeof __scDispatchLayoutChanges === 'function') __scDispatchLayoutChanges();";
 
 struct App {
     gpu: Option<GlWindowSurface>,
@@ -75,6 +76,16 @@ impl ApplicationHandler for App {
                 let (width, height): (u32, u32) = gpu.window.inner_size().into();
                 js_host::host::with_scene(|scene| {
                     scene.compute_layout(width as f32, height as f32);
+                });
+                // Separate `with_scene` call, not nested in the one above:
+                // dispatching onLayout may run JS that re-enters the Scene
+                // (e.g. `__scSetStyle` from a `setState` in an `onLayout`
+                // handler), which would double-borrow the same thread-local
+                // RefCell if done from inside `compute_layout`'s closure.
+                // Whatever it changes takes effect next frame, same as any
+                // other reactive update in this render loop.
+                self.hermes.eval(DISPATCH_LAYOUT_JS).expect("dispatch layout changes failed");
+                js_host::host::with_scene(|scene| {
                     scene.draw(gpu.canvas());
                 });
 
