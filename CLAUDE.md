@@ -288,25 +288,58 @@ Fabric C++:
 MSVC. Через `winbuild` (podman-windows, VS BuildTools уже стоит) найдены и
 исправлены (форк `github.com/zxcloli666/rusty_hermes`, ветка
 `windows-cmake-generator-fix`, задепенчено вместо апстрима `rust-hermes/
-rusty_hermes` — в `crates/js-host/Cargo.toml`) два реальных апстримных бага:
-  1. `libhermes-sys/build.rs` передавал `-G Ninja` через `configure_arg`
-     (сырую строку), а не через `Config::generator("Ninja")` — `cmake`-крейт
-     распознаёт Ninja ТОЛЬКО через своё поле `generator` (см. его
-     `Config::build()`), иначе на MSVC-таргете считает, что генератор —
-     Visual Studio, и добавляет `-Thost=x64 -Ax64` — эти флаги конфликтуют с
-     реально переданным `-G Ninja` ("Generator Ninja does not support
-     platform specification"). Фикс — `.generator("Ninja")`.
+rusty_hermes` — в `crates/js-host/Cargo.toml`) **пять реальных апстримных
+багов, все в `libhermes-sys/build.rs`** (Linux/macOS не тронуты — либо
+отдельная ветка `cfg!`, либо изменение нейтрально для POSIX):
+  1. `-G Ninja` передавался через `configure_arg` (сырую строку), а не через
+     `Config::generator("Ninja")` — `cmake`-крейт распознаёт Ninja ТОЛЬКО
+     через своё поле `generator` (см. его `Config::build()`), иначе на
+     MSVC-таргете считает, что генератор — Visual Studio, и добавляет
+     `-Thost=x64 -Ax64` — эти флаги конфликтуют с реально переданным
+     `-G Ninja` ("Generator Ninja does not support platform specification").
+     Фикс — `.generator("Ninja")`.
   2. Компиляция `binding.cc` (`cc::Build`) звала `.flag("-std=c++17")`/
      `.flag("-fexceptions")`/`.flag("-frtti")` — это GCC/Clang-спеллинг,
      `cl.exe` молча игнорирует незнакомые "-"-флаги (не ошибка, просто ничего
      не делает) → компилируется в до-C++17 режиме → падает на structured
      bindings. Фикс — `.flag_if_supported(...)` с ОБЕИМИ спеллинг-парами
      (POSIX и MSVC `/std:c++17`/`/EHsc`/`/GR`) — проверяет реальный компилятор.
+  3. Дискавери собранных статик-либов фильтровал только `*.a` (POSIX) — на
+     MSVC архивы `*.lib`, ничего не находилось; плюс system-lib fallback
+     слепо добавлял `stdc++`/`icuuc`/`icui18n`/`icudata` для "не-macOS"
+     (Linux-only имена — на Windows таких либ нет) — маскировал баг #3 (линкер
+     падал на несуществующий `stdc++.lib` раньше, чем дошёл бы до
+     missing-Hermes-symbols). Фикс — платформенный выбор расширения
+     (`.lib` vs `.a`) + `system libs` разведены на три ветки (`macos`/
+     `linux`/остальное).
+  4. После фикса #3 линкер честно дошёл до Hermes-символов — и упал на
+     ДЕСЯТКИ `unresolved external symbol __imp__calloc_dbg` (и подобных).
+     Корень: `cmake`-крейт сам инферит `CMAKE_BUILD_TYPE` из профиля Cargo
+     ("Debug" для обычного `cargo build`) — под MSVC это тянет CMake-овские
+     дефолтные `/MDd`-флаги (debug CRT) для объектников Hermes, а Rust'овский
+     финальный линк ВСЕГДА ждёт релизный CRT (`/MD`), вне зависимости от
+     `--release` — рассинхрон. Фикс — `.profile("Release")` безусловно
+     (вендоренная C++ VM, собранная неоптимизированной под наш дев-профиль,
+     не даёт ничего — мы её не правим — и просто медленнее в рантайме).
+  5. Убрав баг #4, линкер дошёл до ЕЩЁ одного набора реальных недостающих
+     символов: `unorm2_*`/`ucol_*`/`udat_*`/`u_strTo*` (ICU) и
+     `timeBeginPeriod`/`timeEndPeriod` (Winmm). CMake-лог "Using Windows 10
+     built-in ICU" означает лишь, что `PlatformUnicodeICU.cpp` зовёт ТЕ ЖЕ
+     точки входа, что и ICU4C, но через системный `icu.dll` — линковку
+     этого Hermes НЕ встраивает в `hermesvm_a.lib` сам, имя импорт-библиотеки
+     на Windows — `icu` (не `icuuc`/`icui18n`/`icudata`, это POSIX-имена).
+     Фикс — `cargo:rustc-link-lib=icu` + `=winmm` в ветке Windows.
   Плюс окружение: Python на Windows был установлен только `py`-лаунчером без
   самого интерпретатора (`python-installer.exe /quiet` тихо не долетал до
   компонента интерпретатора при первой попытке) — переустановлен с логом,
   реальный `python.exe` подтверждён (`Python 3.12.7`).
-  После обоих фиксов реальный CMake-конфиг Hermes проходит, Ninja+cl.exe
-  реально компилируют `hermesvm_a` (десятки .cpp-файлов) — сборка идёт на
-  момент последней проверки, ещё не подтверждена сборка ДО конца (первая
-  полная компиляция Hermes на MSVC — заведомо долгая, десятки минут).
+
+  **✅ ПОДТВЕРЖДЕНО (2026-07-02): реальный Hermes собирается и запускается на
+  Windows.** Тестовый крейт (`rusty_hermes` из форка) собрался (`cargo build`
+  exit 0, ~14.5 минут — первая полная компиляция Hermes через MSVC/Ninja,
+  ожидаемо долго) и реально выполнил JS: `1 + 2 = Some(3.0)`. Архитектурный
+  блокер спайка 1 полностью снят — дальше это уже не "заведётся ли Hermes",
+  а рутинный скаффолд `rn-windows`-бинаря (winit/glutin/skia-safe на Windows
+  уже поддерживаются апстримом теми же крейтами, что и `rn-linux`) — не
+  делали в рамках этой сессии, задача архитектурно решена, реализация —
+  на будущее.
