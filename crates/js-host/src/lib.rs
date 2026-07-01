@@ -89,3 +89,82 @@ mod bundle_test {
         });
     }
 }
+
+/// Spike 6: proves the reanimated tick loop actually advances a `withTiming`
+/// animation over real wall-clock time — no GPU window needed, since the
+/// interpolated value shows up as a real Yoga-computed layout width.
+#[cfg(test)]
+mod reanimated_test {
+    use std::thread::sleep;
+    use std::time::Duration;
+
+    #[test]
+    fn with_timing_animation_advances_and_settles() {
+        let rt = super::Runtime::new().expect("failed to create Hermes runtime");
+        super::host::install(&rt).expect("failed to install host functions");
+        let bundle = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../js/dist/bundle.js"
+        ))
+        .unwrap_or_else(|e| panic!("read js/dist/bundle.js: {e} (run `pnpm build` in js/)"));
+        rt.eval(&bundle).expect("bundle JS failed");
+
+        let badge_width = |rt: &super::Runtime| -> f32 {
+            rt.eval("if (typeof __reanimatedTick === 'function') __reanimatedTick();").expect("tick failed");
+            super::host::with_scene(|scene| {
+                let root = scene.root.expect("bundle should have set a scene root");
+                scene.compute_layout(1024.0, 640.0);
+                let badge = scene.children_of(root)[1];
+                scene.layout_of(badge).2
+            })
+        };
+
+        let initial = badge_width(&rt);
+        assert_eq!(initial, 24.0, "badge should start at its useSharedValue(24) initial width");
+
+        sleep(Duration::from_millis(300));
+        let mid = badge_width(&rt);
+        assert!(mid > initial, "width should have grown partway through the 1200ms withTiming");
+
+        sleep(Duration::from_millis(1200));
+        let settled = badge_width(&rt);
+        assert_eq!(settled, 220.0, "animation should settle exactly at its withTiming target");
+    }
+}
+
+/// Tiling window managers hand out whatever aspect ratio fits their layout,
+/// ignoring the app's requested size (found while chasing a screenshot that
+/// looked cut off at the requested 1024x640 — the actual window was
+/// 847x1388). This renders offscreen (no GPU window needed) at that same
+/// unusual aspect ratio and checks the root's background genuinely covers
+/// it, guarding against the root/Canvas silently falling back to a fixed size.
+#[cfg(test)]
+mod fills_arbitrary_aspect_ratio_test {
+    #[test]
+    fn root_background_covers_a_tall_narrow_window() {
+        let rt = super::Runtime::new().expect("failed to create Hermes runtime");
+        super::host::install(&rt).expect("failed to install host functions");
+        let bundle = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../js/dist/bundle.js"
+        ))
+        .unwrap_or_else(|e| panic!("read js/dist/bundle.js: {e} (run `pnpm build` in js/)"));
+        rt.eval(&bundle).expect("bundle JS failed");
+
+        let (width, height) = (847, 1388);
+        let image_info = skia_safe::ImageInfo::new_n32_premul((width, height), None);
+        let mut surface = skia_safe::surfaces::raster(&image_info, None, None).expect("raster surface");
+        super::host::with_scene(|scene| {
+            scene.compute_layout(width as f32, height as f32);
+            scene.draw(surface.canvas());
+        });
+
+        let image = surface.image_snapshot();
+        let pixmap = image.peek_pixels().expect("raster surface should be readable");
+        // Root's backgroundColor is [0.04, 0.05, 0.08, 1.0] — check well below
+        // where the demo's hardcoded-pixel-position orbs/panel stop (~500px),
+        // near the bottom of the actual window rather than a fixed old size.
+        let color = pixmap.get_color((width / 2, height - 20));
+        assert_eq!((color.r(), color.g(), color.b()), (10, 13, 20), "root background should reach the true window bottom");
+    }
+}

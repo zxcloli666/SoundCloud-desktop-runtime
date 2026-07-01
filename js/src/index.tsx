@@ -9,6 +9,7 @@ import { LegacyRoot } from 'react-reconciler/constants';
 
 import { hostConfig } from './hostConfig';
 import { View } from './host-components';
+import { Animated, useAnimatedStyle, useSharedValue, withTiming } from './reanimated';
 import { Blur, Box, BoxShadow, Canvas, Circle, Group, LinearGradient, RadialGradient, RoundedRect, rect, rrect, vec } from './rnskia';
 
 type Container = { rootId: number | null };
@@ -66,10 +67,31 @@ function Scene() {
   );
 }
 
+// Proves spike 6: a shared value driven by `withTiming`, read back each frame
+// through `useAnimatedStyle` and applied via the reanimated tick — no React
+// re-render involved once mounted.
+function PulseBadge() {
+  const width = useSharedValue(24);
+
+  React.useEffect(() => {
+    width.value = withTiming(220, { duration: 1200 });
+  }, [width]);
+
+  const style = useAnimatedStyle(() => ({
+    width: width.value,
+    height: 24,
+    margin: 16,
+    backgroundColor: [0.4, 0.9, 0.6, 1.0],
+  }));
+
+  return <Animated.View style={style} />;
+}
+
 function App() {
   return (
     <View style={{ backgroundColor: [0.04, 0.05, 0.08, 1.0] }}>
       <Scene />
+      <PulseBadge />
     </View>
   );
 }

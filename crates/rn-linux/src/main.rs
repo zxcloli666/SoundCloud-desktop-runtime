@@ -4,6 +4,7 @@
 //! minus Meta's Fabric C++ (see Desktop-Runtime/CLAUDE.md for why).
 
 use std::path::PathBuf;
+use std::time::Instant;
 
 use js_host::Runtime;
 use skia_desktop::GlWindowSurface;
@@ -17,10 +18,14 @@ use winit::window::{WindowAttributes, WindowId};
 /// require recompiling Rust.
 const BUNDLE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../js/dist/bundle.js");
 
+const TICK_JS: &str = "if (typeof __reanimatedTick === 'function') __reanimatedTick();";
+
 struct App {
     gpu: Option<GlWindowSurface>,
     hermes: Runtime,
+    start: Instant,
     snapshot_path: Option<PathBuf>,
+    snapshot_delay_ms: u64,
 }
 
 impl ApplicationHandler for App {
@@ -41,18 +46,28 @@ impl ApplicationHandler for App {
                 // (our `queueMicrotask` shim) — Hermes only runs those when
                 // told to, there's no event loop doing it implicitly.
                 self.hermes.drain_microtasks().expect("drain microtasks");
+                // Reanimated worklets (spike 6) — our own per-frame tick,
+                // not a second UI-runtime thread. See js/src/reanimated.tsx.
+                self.hermes.eval(TICK_JS).expect("reanimated tick failed");
+
                 let (width, height): (u32, u32) = gpu.window.inner_size().into();
                 js_host::host::with_scene(|scene| {
                     scene.compute_layout(width as f32, height as f32);
                     scene.draw(gpu.canvas());
                 });
-                if let Some(path) = self.snapshot_path.take() {
+
+                let elapsed = self.start.elapsed().as_millis() as u64;
+                if self.snapshot_path.is_some() && elapsed >= self.snapshot_delay_ms {
+                    let path = self.snapshot_path.take().unwrap();
                     std::fs::write(&path, gpu.snapshot_png()).expect("write snapshot");
                     println!("wrote snapshot to {}", path.display());
                     gpu.present();
                     event_loop.exit();
                 } else {
                     gpu.present();
+                    // Keep animating: reanimated timings/derived values need a
+                    // steady stream of frames, not just resize/input events.
+                    gpu.window.request_redraw();
                 }
             }
             _ => {}
@@ -68,7 +83,7 @@ fn main() {
     hermes.eval(&bundle).expect("bundle JS failed");
 
     let event_loop = EventLoop::new().expect("failed to create event loop");
-    event_loop.set_control_flow(ControlFlow::Wait);
+    event_loop.set_control_flow(ControlFlow::Poll);
 
     let attrs = WindowAttributes::default()
         .with_title("rn-linux — Hermes+Yoga+Skia spike")
@@ -77,6 +92,16 @@ fn main() {
     gpu.window.request_redraw();
 
     let snapshot_path = std::env::var_os("RN_LINUX_SNAPSHOT").map(PathBuf::from);
-    let mut app = App { gpu: Some(gpu), hermes, snapshot_path };
+    let snapshot_delay_ms = std::env::var("RN_LINUX_SNAPSHOT_DELAY_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let mut app = App {
+        gpu: Some(gpu),
+        hermes,
+        start: Instant::now(),
+        snapshot_path,
+        snapshot_delay_ms,
+    };
     event_loop.run_app(&mut app).expect("event loop run_app failed");
 }

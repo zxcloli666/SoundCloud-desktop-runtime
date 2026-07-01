@@ -114,7 +114,34 @@ Fabric C++:
   be an array" — не блокирует рендер, не нашёл чистого фикса без потери
   dev-ошибок react-reconciler, оставлено как есть.
 
-Дальше — reanimated worklets + sc-rn TurboModule (спайк 6), живые экраны
-`@sc/ui` на бандлер-алиасе `@shopify/react-native-skia`→`rnskia.tsx` (спайк 7).
-Windows-путь (RN-Windows + Skia-порт) — после/параллельно, через `winbuild`
-(podman-windows, VS BuildTools уже стоит).
+- **Спайк 6**: reanimated-совместимый слой (`js/src/reanimated.tsx`) —
+  `useSharedValue`/`useDerivedValue`/`useAnimatedStyle`/`withTiming`/
+  `Animated.View`, ровно то, что использует `@sc/ui` (без `withSpring`/
+  `runOnUI`/жестов — не нужны). **Осознанно не второй UI-runtime поток**
+  (как настоящий reanimated) — мы владеем всем render loop однопоточно, так
+  что "воркл" — просто функция, которую наш собственный per-frame tick
+  (`__reanimatedTick`, зовётся из `rn-linux` перед каждым layout+draw)
+  перезапускает заново; `useDerivedValue`/`useAnimatedStyle` пересчитываются
+  КАЖДЫЙ раз без dependency-tracking (дёшево для десктопных объёмов анимаций).
+  `SharedValue.value =` перехватывает результат `withTiming()` (тегированный
+  дескриптор) и стартует интерполяцию; `Animated.View` регистрирует
+  computed-style в реестре по instance-id через `ref`+`useEffect`, отдельно от
+  обычного React-коммита (как и в настоящем reanimated). `rn-linux` теперь
+  крутит непрерывный redraw-loop (`ControlFlow::Poll` + `request_redraw()` в
+  конце каждого кадра) — нужно для анимаций, не только resize/input.
+  Проверено `#[test]` (`reanimated_test`): ширина растёт 24→220 за реальные
+  ~1.5с и точно оседает на target. **ConcurrentRoot всё ещё НЕ доделан**
+  (см. спайк 4b) — низкий приоритет, в конце (см. task list, отдельно оценили:
+  выигрыш в отзывчивости под нагрузкой, не в сыром перфе разового рендера).
+  **Найден и НЕ связан с reanimated баг**: на тайловых WM (Hyprland игнорирует
+  `with_inner_size`, реально даёт 847x1388 вместо 1024x640) GPU-скриншот
+  (`snapshot_png()`) показывает фон только в верхних ~640px, хотя Yoga-layout
+  и offscreen CPU-рендер (regression-тест `fills_arbitrary_aspect_ratio_test`)
+  для ТОЙ ЖЕ сцены на 847x1388 — верны. Значит баг в GL-surface/resize-таймингах
+  (`skia-desktop/gl_surface.rs`), не в Scene/Yoga/reconciler — расследовать
+  отдельно (задача в task list), не блокирует остальное.
+
+Дальше — sc-rn TurboModule + живые экраны `@sc/ui` на бандлер-алиасе
+`@shopify/react-native-skia`→`rnskia.tsx` (спайк 7). Windows-путь (RN-Windows +
+Skia-порт) — после/параллельно, через `winbuild` (podman-windows, VS BuildTools
+уже стоит).
