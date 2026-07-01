@@ -277,11 +277,22 @@ mod live_data_test {
             globalThis.__testOk = null;
             globalThis.__testPayload = null;
             globalThis.__scDeliverResult = function (id, ok, payload) {
+                if (id !== 100001) return;
                 globalThis.__testDone = true;
                 globalThis.__testOk = ok;
                 globalThis.__testPayload = payload;
             };
-            __scAuthStatus(1);
+            // A distinctive, out-of-range callback id — not 1: `live_data`'s
+            // tokio runtime/mpsc channel (js-host/src/live_data.rs) is one
+            // process-global instance shared by every `Runtime::new()` in
+            // this test binary. The bundle's own `live-data.ts` module
+            // (evaluated by bundle_test/reanimated_test/
+            // fills_arbitrary_aspect_ratio_test, each a *separate* Hermes
+            // runtime) fires its `LiveDataProbe`'s `authStatus()` with
+            // callback ids starting at 1 too — a small hardcoded id here
+            // could receive one of *their* stale results instead of this
+            // call's own.
+            __scAuthStatus(100001);
             "#,
         )
         .expect("eval failed");
@@ -301,7 +312,8 @@ mod live_data_test {
         assert!(done, "auth_status() should have resolved or rejected within 5s");
 
         let ok = rt.eval("globalThis.__testOk").expect("poll eval failed").as_bool().expect("ok should be a bool");
-        assert!(ok, "auth_status() should succeed with a fresh, empty data dir (no error expected)");
+        let debug_payload = rt.eval("String(globalThis.__testPayload)").expect("poll eval failed").into_string().expect("string").to_rust_string().expect("utf8");
+        assert!(ok, "auth_status() should succeed with a fresh, empty data dir (no error expected): {debug_payload}");
 
         let payload = rt
             .eval("JSON.stringify(globalThis.__testPayload)")
@@ -331,7 +343,7 @@ mod live_data_test {
         rt.eval(
             r#"
             globalThis.__testDone2 = false;
-            __scHomeClusters(2, 5, JSON.stringify([]), false);
+            __scHomeClusters(100002, 5, JSON.stringify([]), false);
             "#,
         )
         .expect("eval failed");
@@ -339,7 +351,7 @@ mod live_data_test {
             r#"
             var __origDeliver = globalThis.__scDeliverResult;
             globalThis.__scDeliverResult = function (id, ok, payload) {
-                if (id === 2) { globalThis.__testDone2 = true; return; }
+                if (id === 100002) { globalThis.__testDone2 = true; return; }
                 __origDeliver(id, ok, payload);
             };
             "#,
