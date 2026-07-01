@@ -1,3 +1,7 @@
 # Rust
 /target/
 crates/*/target/
+
+# JS (js/) — built via `pnpm build`, not committed
+js/node_modules/
+js/dist/

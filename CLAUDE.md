@@ -9,10 +9,13 @@ Desktop-Runtime/
   crates/skia-desktop/   GPU-Skia surface (skia-safe + winit/glutin), общий
                          для Linux-хоста и будущего Windows-бэкенда
   crates/js-host/        Hermes (rusty_hermes) + сцена-дерево (реальная Yoga)
-                         + host-функции для JS; сюда же ляжет react-reconciler
-                         host-config и JSI-биндинги react-native-skia/reanimated
+                         + host-функции для JS; сюда же лягут JSI-биндинги
+                         react-native-skia/reanimated
   crates/rn-linux/       бинарь: winit-окно + event loop, склеивает
                          skia-desktop и js-host
+  js/                    react-reconciler host-config + тестовое дерево,
+                         esbuild → dist/bundle.js (`pnpm build`), которое
+                         rn-linux грузит и eval'ит в Hermes
 ```
 
 ## Архитектура (решено 2026-07-01, не Fabric C++ от Meta)
@@ -41,7 +44,9 @@ Desktop-Runtime/
 
 ## Состояние
 
-Спайки 2-4 (`Core/docs/DESKTOP_RUNTIME_TZ.md`) готовы и проверены на Linux:
+Спайки 2-4 (`Core/docs/DESKTOP_RUNTIME_TZ.md`) готовы и проверены на Linux —
+настоящий `react-reconciler` дерево → Yoga layout → Skia GPU draw, без
+Fabric C++:
 
 - **Спайк 2**: winit-окно + skia-safe GPU-surface (OpenGL через glutin) рисует
   статичную сцену на Linux. `GlWindowSurface::snapshot_png()` — readback кадра
@@ -54,16 +59,36 @@ Desktop-Runtime/
   `__scCreateText`/`__scAppendChild`/`__scSetStyle` (JSON-пропы), геометрия —
   настоящая `yoga` (crate `yoga` = bschwind/yoga-rs, C++ Facebook Yoga,
   собирается системным g++/libstdc++, libc++-dev из README не понадобился).
-  `rn-linux` вызывает Hermes-JS, строящий дерево, считает layout под размер
-  окна и рисует через `skia-desktop`. **Грабля**: `skia_safe::Font::default()`
-  даёт typeface с 0 глифов (пустой) — реальный шрифт только через
-  `FontMgr::default().legacy_make_typeface(None, FontStyle::default())`
-  (в этой сборке резолвится в "Noto Sans", 708 семейств видит fontconfig).
-  Ещё не react-reconciler — дерево строит рукописный JS напрямую через
-  host-функции; сам react-reconciler на этих же host-функциях — следующий шаг.
+- **Спайк 4b**: `js/` — настоящий `react-reconciler` (0.32, React 19) с нашим
+  host-config вызывает те же host-функции вместо рукописного JS.
+  **Грабли (все решены)**:
+  - `skia_safe::Font::default()` даёт typeface с 0 глифов — реальный шрифт
+    только через `FontMgr::default().legacy_make_typeface(None,
+    FontStyle::default())` (резолвится в "Noto Sans", fontconfig видит 708
+    семейств).
+  - Hermes — bare-движок: нет `setTimeout`/`console`/`setImmediate` — шимы в
+    `js-host/src/host.rs::PRELUDE_JS`. Hermes' Promise-полифилл сам зовёт
+    `setImmediate` при `.then()` — без шима падает ДО пользовательского кода.
+  - `react-reconciler` host-config API шире, чем в его README: он не
+    упоминает `resolveUpdatePriority`/`getCurrentUpdatePriority`/
+    `setCurrentUpdatePriority` (React 18+) и `maySuspendCommit`/
+    `preloadInstance`/`startSuspendingCommit`/`suspendInstance`/
+    `waitForCommitToBeReady` (React 19 "suspensey commit") — без них
+    `undefined is not a function` в разных внутренних местах.
+    `getRootHostContext`/`getChildHostContext` не должны возвращать `null`
+    (`requiredContext()` считает это багом и шумит в консоль), хотя README
+    прямо говорит, что можно.
+  - Ошибки внутри `queueMicrotask`-колбэка — необработанный promise rejection,
+    глушится молча без своего try/catch вокруг шима.
+  - `ConcurrentRoot` (режим настоящего RN/Fabric) пока не завёлся — доходит до
+    `updateContainer` без ошибок, но не планирует микротаск-коммит; рабочий
+    путь сейчас — `LegacyRoot` + `Renderer.flushSyncFromReconciler(fn)`
+    (публичное имя `flushSync`, в этой сборке экспортировано как
+    `flushSyncFromReconciler`). **Разобраться с ConcurrentRoot до спайка 6** —
+    reanimated, вероятно, расчитывает на конкурентную семантику скорее, чем
+    "legacy" — не проблема качества кода, просто имя режима реконсилера.
 
-Дальше — `react-reconciler` host-config поверх готовых host-функций (спайк 4b),
-JSI-биндинги под `@shopify/react-native-skia`/`reanimated` (спайк 5-6), затем
-sc-rn TurboModule и живые экраны `@sc/ui` (спайк 7). Windows-путь (RN-Windows +
-Skia-порт) — после/параллельно, через `winbuild` (podman-windows, VS BuildTools
-уже стоит).
+Дальше — JSI-биндинги под `@shopify/react-native-skia`/`reanimated` (спайк
+5-6), затем sc-rn TurboModule и живые экраны `@sc/ui` (спайк 7). Windows-путь
+(RN-Windows + Skia-порт) — после/параллельно, через `winbuild` (podman-windows,
+VS BuildTools уже стоит).

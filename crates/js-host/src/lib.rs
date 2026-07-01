@@ -63,3 +63,29 @@ mod tests {
         });
     }
 }
+
+/// Guards the `js/` bundle against regressions: react-reconciler's host-config
+/// surface has grown undocumented required methods across React versions
+/// (see Desktop-Runtime/CLAUDE.md) — this catches it breaking again without
+/// needing a GPU window. Requires `pnpm build` in `js/` to have run first.
+#[cfg(test)]
+mod bundle_test {
+    #[test]
+    fn react_reconciler_bundle_mounts_a_tree() {
+        let rt = super::Runtime::new().expect("failed to create Hermes runtime");
+        super::host::install(&rt).expect("failed to install host functions");
+        let bundle = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../js/dist/bundle.js"
+        ))
+        .unwrap_or_else(|e| panic!("read js/dist/bundle.js: {e} (run `pnpm build` in js/)"));
+        rt.eval(&bundle).expect("bundle JS failed");
+
+        super::host::with_scene(|scene| {
+            let root = scene.root.expect("bundle should have set a scene root");
+            scene.compute_layout(1024.0, 640.0);
+            let (_, _, w, h) = scene.layout_of(root);
+            assert!(w > 0.0 && h > 0.0, "root should have a non-empty layout");
+        });
+    }
+}

@@ -52,6 +52,37 @@ fn set_root(id: u32) {
     SCENE.with(|s| s.borrow_mut().set_root(id));
 }
 
+#[hermes_op(name = "__scConsoleLog")]
+fn console_log(message: String) {
+    println!("[js] {message}");
+}
+
+/// Shims for host globals bare Hermes doesn't provide (no browser, no Node):
+/// react-reconciler/scheduler need `setTimeout`-family and `queueMicrotask`.
+/// Timers run the callback immediately — we render a static tree synchronously,
+/// nothing here actually needs to wait.
+const PRELUDE_JS: &str = r#"
+globalThis.setTimeout = function (fn) { fn(); return 0; };
+globalThis.clearTimeout = function () {};
+globalThis.setInterval = function () { return 0; };
+globalThis.clearInterval = function () {};
+// Hermes' own Promise internals reach for a host `setImmediate` when
+// scheduling `.then()` jobs — without it, `Promise.resolve().then()` throws.
+globalThis.setImmediate = function (fn) { fn(); return 0; };
+globalThis.queueMicrotask = globalThis.queueMicrotask || function (fn) {
+    Promise.resolve().then(function () {
+        // A throw here is an unhandled rejection — silent by default. Surface
+        // it, since this is where react-reconciler's commit work runs.
+        try { fn(); } catch (e) { console.error('microtask error: ' + ((e && e.stack) || e)); }
+    });
+};
+globalThis.console = {
+    log: function () { __scConsoleLog(Array.prototype.slice.call(arguments).join(' ')); },
+    warn: function () { __scConsoleLog('[warn] ' + Array.prototype.slice.call(arguments).join(' ')); },
+    error: function () { __scConsoleLog('[error] ' + Array.prototype.slice.call(arguments).join(' ')); },
+};
+"#;
+
 pub fn install(rt: &Runtime) -> rusty_hermes::Result<()> {
     create_view::register(rt)?;
     create_text::register(rt)?;
@@ -59,5 +90,9 @@ pub fn install(rt: &Runtime) -> rusty_hermes::Result<()> {
     remove_child::register(rt)?;
     set_style::register(rt)?;
     set_root::register(rt)?;
+    console_log::register(rt)?;
+    rt.eval(PRELUDE_JS).map_err(|e| {
+        rusty_hermes::Error::RuntimeError(format!("failed to install JS prelude shims: {e}"))
+    })?;
     Ok(())
 }
