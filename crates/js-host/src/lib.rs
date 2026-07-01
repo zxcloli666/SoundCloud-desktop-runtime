@@ -188,10 +188,12 @@ mod fills_arbitrary_aspect_ratio_test {
 
         let image = surface.image_snapshot();
         let pixmap = image.peek_pixels().expect("raster surface should be readable");
-        // Root's backgroundColor is [0.04, 0.05, 0.08, 1.0] — check well below
-        // where the demo's hardcoded-pixel-position orbs/panel stop (~500px),
-        // near the bottom of the actual window rather than a fixed old size.
-        let color = pixmap.get_color((width / 2, height - 20));
+        // Root's backgroundColor is [0.04, 0.05, 0.08, 1.0]. Sample a few
+        // pixels in from the left edge, near the bottom of the actual window
+        // rather than a fixed old size — every demo child (Scene/LiveDataProbe/
+        // CoreUiProbe/PulseBadge) has its own margin, so this stays clear of
+        // their tinted backgrounds regardless of how tall the demo tree grows.
+        let color = pixmap.get_color((5, height - 5));
         assert_eq!((color.r(), color.g(), color.b()), (10, 13, 20), "root background should reach the true window bottom");
     }
 }

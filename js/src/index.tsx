@@ -2,7 +2,7 @@
 // '@shopify/react-native-skia' / 'react-native-reanimated' — resolved at
 // bundle time (build.mjs `alias`) to our shims instead of the real native
 // modules. `Atmosphere` below is @sc/ui's own component, not a local copy.
-import { Atmosphere, ThemeProvider } from '@sc/ui';
+import { Atmosphere, Avatar, Button, Card, SectionHeader, ThemeProvider, TrackRow } from '@sc/ui';
 import React from 'react';
 import Reconciler from 'react-reconciler';
 import { ConcurrentRoot } from 'react-reconciler/constants';
@@ -114,6 +114,28 @@ function LiveDataProbe() {
   return <Text style={{ margin: 16, color: [1.0, 1.0, 1.0, 0.85] }}>{status}</Text>;
 }
 
+// Exercises `@sc/ui`'s actual blocks — not the raw shim primitives `Scene`/
+// `LiveDataProbe` use above. These are the components that hit the
+// array-form `style` bugs found auditing shim coverage: `Card`/`Button` wrap
+// `Pressable` via `Animated.createAnimatedComponent` and embed a
+// `useAnimatedStyle()` callback inside a `style` array, `Avatar`/`TrackRow`
+// pass `style={[...]}` directly. If this renders with real backgrounds/
+// border-radii/gaps (not blank boxes), the style-array + animated-style
+// fixes actually work end to end, not just in isolation.
+function CoreUiProbe() {
+  return (
+    <View style={{ gap: 12, margin: 16 }}>
+      <SectionHeader kicker="Проверка" title="Core/ui блоки" />
+      <View style={{ flexDirection: 'row', gap: 12, alignItems: 'center' }}>
+        <Avatar url={null} size={56} ring />
+        <Button label="Слушать" onPress={() => {}} />
+      </View>
+      <Card title="Тестовый трек" subtitle="Тестовый артист" width={140} onPress={() => {}} />
+      <TrackRow index={0} title="Первый трек" artist="Артист" durationMs={183000} active onPress={() => {}} />
+    </View>
+  );
+}
+
 function App() {
   return (
     <ThemeProvider accent="#5a8cff" perfMode="beauty">
@@ -123,6 +145,7 @@ function App() {
         <Atmosphere />
         <Scene />
         <LiveDataProbe />
+        <CoreUiProbe />
         {/* PulseBadge stays last — reanimated_test (js-host/src/lib.rs) finds
             it via `children_of(root).last()`, robust to however many
             siblings render before it, not to ones added after. */}

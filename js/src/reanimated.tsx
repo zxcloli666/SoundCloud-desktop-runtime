@@ -263,6 +263,10 @@ let lastFrameTimestamp: number | null = null;
   // react-native-skia nodes with a SharedValue prop (e.g. `@sc/ui`'s idle
   // drift `<Group transform={useDerivedValue(...)}>`) — see hostConfig.ts.
   (globalThis as { __scRefreshAnimatedSkProps?: () => void }).__scRefreshAnimatedSkProps?.();
+  // View/Canvas nodes whose `style` array embeds a `useAnimatedStyle()`
+  // callback (`@sc/ui`'s Card/Button press-scale via `createAnimatedComponent`,
+  // not `Animated.View`) — see hostConfig.ts.
+  (globalThis as { __scRefreshAnimatedViewStyles?: () => void }).__scRefreshAnimatedViewStyles?.();
   for (const r of reactions) {
     const curr = r.prepare();
     if (curr !== r.prev) {
@@ -359,12 +363,20 @@ export function useAnimatedStyle(fn: () => Record<string, unknown>): () => Recor
 // `createAnimatedComponent`'s `animatedProps`, which we fold into style below.
 export const useAnimatedProps = useAnimatedStyle;
 
+// `@sc/ui`'s Card/Button wrap `Pressable` with this (not `Animated.View`) and
+// embed the `useAnimatedStyle()` callback as one element of a `style` array
+// (`style={[base, animatedStyle, style]}`) rather than passing it as the
+// whole `style` value — `hostConfig.ts`'s `applyStyle`/`resolveStyle` already
+// knows how to find and re-resolve a function anywhere inside a style array
+// every tick, so this just needs to pass the array through unchanged instead
+// of spreading it as if it were a plain object (which produced numeric-index
+// garbage keys, silently dropping every real style property).
 export function createAnimatedComponent<P extends { style?: unknown }>(
   Component: React.ComponentType<P>,
 ): React.ComponentType<P & { animatedProps?: () => Record<string, unknown> }> {
   return function AnimatedComponent({ animatedProps, style, ...rest }: P & { animatedProps?: () => Record<string, unknown> }) {
-    const extra = animatedProps ? animatedProps() : {};
-    return <Component {...(rest as P)} style={{ ...(style as object), ...extra }} />;
+    const mergedStyle = animatedProps ? [style, animatedProps] : style;
+    return <Component {...(rest as P)} style={mergedStyle} />;
   };
 }
 

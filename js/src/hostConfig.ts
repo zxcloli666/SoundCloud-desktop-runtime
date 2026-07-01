@@ -39,12 +39,21 @@ const SK_DRAW_TYPES = new Set([
 
 import { DefaultEventPriority } from 'react-reconciler/constants';
 
+import type { StyleProp } from './react-native';
+
 // react-reconciler@0.32 also exports `NoEventPriority` (= 0) from this module,
 // but @types/react-reconciler is pinned to 0.28 and doesn't know about it yet.
 const NoEventPriority = 0;
 
+// A style array element may itself be a function — reanimated's
+// `useAnimatedStyle()`/`useAnimatedProps()` return a callback, and
+// `Animated.createAnimatedComponent(X)` (used by `@sc/ui`'s Card/Button as
+// `style={[base, animatedStyle, style]}`, not `Animated.View`) passes it
+// through embedded in the array rather than as the whole `style` value.
+type ViewStyleValue = StyleProp<Record<string, unknown>> | (() => Record<string, unknown>);
+
 export type ViewProps = {
-  style?: Record<string, unknown>;
+  style?: ViewStyleValue;
   children?: unknown;
 };
 
@@ -52,9 +61,47 @@ type Instance = number;
 type TextInstance = number;
 type Container = { rootId: Instance | null };
 
-function applyStyle(id: Instance, props: ViewProps): void {
-  __scSetStyle(id, JSON.stringify(props.style ?? {}));
+function styleHasFunction(style: ViewStyleValue): boolean {
+  if (typeof style === 'function') return true;
+  if (Array.isArray(style)) return style.some((s) => styleHasFunction(s as ViewStyleValue));
+  return false;
 }
+
+// Real RN components always pass `style` as an array (`style={[base, cond &&
+// override]}`) and rely on the host platform to flatten it — Fabric/Paper do
+// this internally, so it's invisible from JS. We're the "host platform"
+// here: skip this and Rust's `serde_json::from_str::<StyleInput>` rejects
+// the array outright, so no real `@sc/ui` component mounts at all. Also
+// resolves any function element by calling it (see `ViewStyleValue` above).
+function resolveStyle(style: ViewStyleValue): Record<string, unknown> {
+  if (typeof style === 'function') return style();
+  if (Array.isArray(style)) return Object.assign({}, ...style.map((s) => resolveStyle(s as ViewStyleValue)));
+  return (style || {}) as Record<string, unknown>;
+}
+
+// id -> raw style (array/function form) for nodes whose style contains a
+// reanimated callback and needs re-resolving every tick, not just at React
+// commit time — same pattern as `skAnimatedNodes` below, for View/Canvas
+// instead of Skia draw nodes.
+const viewAnimatedNodes = new Map<Instance, ViewStyleValue>();
+
+function applyStyle(id: Instance, props: ViewProps): void {
+  const style = props.style;
+  __scSetStyle(id, JSON.stringify(resolveStyle(style ?? {})));
+  if (style !== undefined && styleHasFunction(style)) {
+    viewAnimatedNodes.set(id, style);
+  } else {
+    viewAnimatedNodes.delete(id);
+  }
+}
+
+// Called from reanimated.tsx's `__reanimatedTick`, alongside
+// `__scRefreshAnimatedSkProps` below.
+(globalThis as Record<string, unknown>).__scRefreshAnimatedViewStyles = function scRefreshAnimatedViewStyles(): void {
+  for (const [id, style] of viewAnimatedNodes) {
+    __scSetStyle(id, JSON.stringify(resolveStyle(style)));
+  }
+};
 
 // react-native-skia lets *any* prop be a Reanimated `SharedValue` instead of a
 // plain value (real react-native-skia reads `.value` at draw time via its own
@@ -230,6 +277,7 @@ export const hostConfig = {
   removeChild(parent: Instance, child: Instance): void {
     __scRemoveChild(parent, child);
     skAnimatedNodes.delete(child);
+    viewAnimatedNodes.delete(child);
   },
 
   removeChildFromContainer(container: Container, child: Instance): void {

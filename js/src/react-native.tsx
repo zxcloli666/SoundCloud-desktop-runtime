@@ -194,12 +194,20 @@ export const Linking = {
   addEventListener: () => ({ remove: () => {} }),
 };
 
+// Matches real RN's `StyleProp<T>` shape: arrays nest (`style={[base, cond &&
+// override]}` is common), and falsy entries (`false`/`null`/`undefined`, from
+// `cond && style`) are valid and simply contribute nothing.
+export type StyleProp<T> = T | StyleProp<T>[] | null | undefined | false;
+
 export const StyleSheet = {
   create<T extends Record<string, unknown>>(styles: T): T {
     return styles;
   },
-  flatten<T>(style: T | T[]): T {
-    return Array.isArray(style) ? Object.assign({}, ...style) : style;
+  flatten<T extends Record<string, unknown>>(style: StyleProp<T>): T {
+    if (Array.isArray(style)) {
+      return Object.assign({}, ...style.map((s) => StyleSheet.flatten(s))) as T;
+    }
+    return (style || ({} as T));
   },
   compose<T>(a: T, b: T): T[] {
     return [a, b];
