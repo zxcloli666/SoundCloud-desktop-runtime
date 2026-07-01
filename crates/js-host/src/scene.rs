@@ -13,7 +13,7 @@
 //! `@sc/ui` happens to use today — the point is not having to keep coming
 //! back here every time a new screen touches one more RN style prop.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
 use ordered_float::OrderedFloat;
@@ -21,9 +21,95 @@ use serde::Deserialize;
 use serde_json::Value as Json;
 use skia_safe::{
     BlendMode, BlurStyle, Canvas, Color4f, Font, FontMgr, FontStyle, MaskFilter, Paint, PaintStyle,
-    Point, RRect, Rect, Shader, TileMode, Vector, canvas::SaveLayerRec, gradient, image_filters,
+    Point, RRect, Rect, Shader, TileMode, Typeface, Vector, canvas::SaveLayerRec, gradient, image_filters,
 };
-use yoga::{Align, Direction, Edge, FlexDirection, Justify, Node as YogaNode, PositionType, StyleUnit, Wrap};
+use yoga::{Align, Direction, Edge, FlexDirection, Justify, MeasureMode, Node as YogaNode, PositionType, Size as YogaSize, StyleUnit, Wrap};
+
+thread_local! {
+    // The system default typeface is somewhat expensive to resolve (font
+    // manager lookup) — cache it once per thread, cheap to `Typeface::clone`
+    // (Skia ref-counted handle) for a differently-sized `Font` each time.
+    static TYPEFACE_CACHE: RefCell<Option<Typeface>> = const { RefCell::new(None) };
+    // Set only for the duration of `Scene::compute_layout`'s `calculate_layout`
+    // call — Yoga invokes `measure_text` synchronously and reentrantly from
+    // there for any dirty text node, and that's the ONLY time it's non-null.
+    // A raw pointer, not a normal reference, because `extern "C" fn` measure
+    // callbacks can't capture Rust closure state — Yoga's C API only passes
+    // back whatever opaque `NodeRef`/context we attached per-node (see
+    // `SceneNode::text`/`Scene::alloc`), not an arbitrary payload.
+    static CURRENT_SCENE: Cell<*const Scene> = const { Cell::new(std::ptr::null()) };
+}
+
+fn cached_typeface() -> Typeface {
+    TYPEFACE_CACHE.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(
+                FontMgr::default()
+                    .legacy_make_typeface(None, FontStyle::default())
+                    .expect("no system default typeface available"),
+            );
+        }
+        slot.as_ref().expect("just initialized").clone()
+    })
+}
+
+fn sized_font(size: f32) -> Font {
+    Font::from_typeface(cached_typeface(), size)
+}
+
+/// Longest prefix of `text` (by character count) that, with "…" appended,
+/// measures within `max_width` — binary search since `Font::measure_str`
+/// isn't linear-cost-free to call per character on longer strings.
+fn truncate_with_ellipsis(text: &str, font: &Font, max_width: f32) -> String {
+    let (full_width, _) = font.measure_str(text, None);
+    if full_width <= max_width {
+        return text.to_string();
+    }
+    let ellipsis = "\u{2026}";
+    let (ellipsis_width, _) = font.measure_str(ellipsis, None);
+    if ellipsis_width > max_width {
+        return String::new();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let (mut lo, mut hi) = (0usize, chars.len());
+    while lo < hi {
+        let mid = lo + (hi - lo + 1) / 2;
+        let candidate: String = chars[..mid].iter().collect::<String>() + ellipsis;
+        let (width, _) = font.measure_str(&candidate, None);
+        if width <= max_width {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    chars[..lo].iter().collect::<String>() + ellipsis
+}
+
+/// Yoga's measure-function hook (real single-line text measurement, replacing
+/// a `chars().count() * 8.0` guess) — reports the text's natural, unwrapped
+/// size regardless of the width/height constraint Yoga passes in, same as a
+/// real non-wrapping single-line Text component. If the node's *final*
+/// layout width ends up smaller (Yoga's flex-shrink honoring that natural
+/// size as a hint, same as real Text), `draw_layout_node` truncates with an
+/// ellipsis at draw time — this function only ever reports the untruncated
+/// size.
+extern "C" fn measure_text(node_ref: yoga::NodeRef, _width: f32, _width_mode: MeasureMode, _height: f32, _height_mode: MeasureMode) -> YogaSize {
+    let empty = YogaSize { width: 0.0, height: 0.0 };
+    let Some(id) = yoga::get_node_ref_context(&node_ref).and_then(|ctx| ctx.downcast_ref::<NodeId>()).copied() else {
+        return empty;
+    };
+    let scene_ptr = CURRENT_SCENE.with(|c| c.get());
+    if scene_ptr.is_null() {
+        return empty;
+    }
+    // SAFETY: only ever non-null for the duration of the `calculate_layout`
+    // call inside `Scene::compute_layout`, which holds `self: &Scene` (this
+    // exact pointer) on the stack for that whole call — Yoga only invokes
+    // measure functions synchronously from within it, never after it returns.
+    let scene = unsafe { &*scene_ptr };
+    scene.measure_text_node(id).unwrap_or(empty)
+}
 
 pub type NodeId = u32;
 
@@ -94,6 +180,12 @@ struct LayoutPaint {
     border_width: f32,
     border_color: Option<[f32; 4]>,
     shadow: Option<ViewShadow>,
+    /// `react-native.tsx`'s `Text` always renders `<View style={{fontSize,
+    /// color, ...}}>{string}</View>` — these live on the wrapping View (this
+    /// node), not the `NodeKind::Text` child itself, so drawing that child
+    /// looks them up via `SceneNode::parent`.
+    font_size: f32,
+    text_color: [f32; 4],
 }
 
 /// RN's iOS-style View shadow (`shadowColor`/`shadowOpacity`/`shadowRadius`/
@@ -114,6 +206,9 @@ impl Default for CornerRadii {
     }
 }
 
+const DEFAULT_FONT_SIZE: f32 = 16.0;
+const DEFAULT_TEXT_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+
 pub struct SceneNode {
     kind: NodeKind,
     /// `None` for Skia draw nodes — they don't participate in flexbox.
@@ -123,6 +218,9 @@ pub struct SceneNode {
     /// (the prop shapes are too varied per type to justify one big struct).
     props: Json,
     children: Vec<NodeId>,
+    /// Set by `append_child` — a `NodeKind::Text` child looks its own
+    /// `fontSize`/`color` up through this (see `LayoutPaint::font_size`).
+    parent: Option<NodeId>,
 }
 
 impl SceneNode {
@@ -130,28 +228,40 @@ impl SceneNode {
         Self {
             kind,
             yoga: Some(YogaNode::new()),
-            paint: LayoutPaint { opacity: 1.0, ..Default::default() },
+            paint: LayoutPaint { opacity: 1.0, font_size: DEFAULT_FONT_SIZE, text_color: DEFAULT_TEXT_COLOR, ..Default::default() },
             props: Json::Null,
             children: Vec::new(),
+            parent: None,
         }
     }
 
     fn sk(kind: NodeKind) -> Self {
-        Self { kind, yoga: None, paint: LayoutPaint::default(), props: Json::Null, children: Vec::new() }
+        Self {
+            kind,
+            yoga: None,
+            paint: LayoutPaint { font_size: DEFAULT_FONT_SIZE, text_color: DEFAULT_TEXT_COLOR, ..Default::default() },
+            props: Json::Null,
+            children: Vec::new(),
+            parent: None,
+        }
     }
 
     fn text(text: String) -> Self {
         let mut yoga = YogaNode::new();
-        // Placeholder metrics — real font measurement is a Skia concern that
-        // lands with real text support, not here.
-        yoga.set_width(pt(text.chars().count() as f32 * 8.0 + 4.0));
-        yoga.set_height(pt(20.0));
+        // No explicit width/height: `measure_text` (Yoga's measure-function
+        // hook, wired up in `Scene::alloc` once this node's id is known)
+        // reports real measured size instead. `flex_shrink` lets a text node
+        // actually shrink below that natural size when its flex container
+        // doesn't have room — `draw_layout_node` compares final vs. natural
+        // width to decide whether to truncate with an ellipsis.
+        yoga.set_flex_shrink(1.0);
         Self {
             kind: NodeKind::Text(text),
             yoga: Some(yoga),
-            paint: LayoutPaint { opacity: 1.0, ..Default::default() },
+            paint: LayoutPaint { opacity: 1.0, font_size: DEFAULT_FONT_SIZE, text_color: DEFAULT_TEXT_COLOR, ..Default::default() },
             props: Json::Null,
             children: Vec::new(),
+            parent: None,
         }
     }
 }
@@ -249,6 +359,11 @@ pub struct StyleInput {
     pub shadow_opacity: Option<f32>,
     pub shadow_radius: Option<f32>,
     pub shadow_offset: Option<ShadowOffset>,
+
+    /// Lives on the wrapping View (`react-native.tsx`'s `Text` component),
+    /// not the `NodeKind::Text` child — see `LayoutPaint::font_size`.
+    pub color: Option<Json>,
+    pub font_size: Option<f32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -272,9 +387,17 @@ impl Scene {
         Self::default()
     }
 
-    fn alloc(&mut self, node: SceneNode) -> NodeId {
+    fn alloc(&mut self, mut node: SceneNode) -> NodeId {
         self.next_id += 1;
         let id = self.next_id;
+        // Only known once allocated (the node itself doesn't know its own id
+        // yet when `SceneNode::text()` constructs it) — `measure_text` reads
+        // this back via `yoga::get_node_ref_context` to know which node it's
+        // being asked to measure.
+        if let (NodeKind::Text(_), Some(yoga)) = (&node.kind, node.yoga.as_mut()) {
+            yoga.set_context(Some(yoga::Context::new(id)));
+            yoga.set_measure_func(Some(measure_text));
+        }
         self.nodes.insert(id, RefCell::new(node));
         id
     }
@@ -290,15 +413,16 @@ impl Scene {
     /// Content-only update for an existing text node (react-reconciler's
     /// `commitTextUpdate`, called whenever a `<Text>` child string changes
     /// between renders — every live-data-driven label needs this, not just
-    /// static copy). Re-derives the same placeholder width metric `text()`
-    /// uses at creation, so re-layout still accounts for the new length.
+    /// static copy). `mark_dirty` invalidates Yoga's cached measurement so
+    /// `measure_text` actually re-runs for the new string on the next layout
+    /// (Yoga otherwise assumes an unchanged node's size is still valid).
     pub fn set_text(&mut self, id: NodeId, text: String) {
         let cell = self.nodes.get(&id).expect("unknown text node id");
         let mut node = cell.borrow_mut();
-        if let Some(yoga) = node.yoga.as_mut() {
-            yoga.set_width(pt(text.chars().count() as f32 * 8.0 + 4.0));
-        }
         node.kind = NodeKind::Text(text);
+        if let Some(yoga) = node.yoga.as_mut() {
+            yoga.mark_dirty();
+        }
     }
 
     /// `kind_name` matches the host-config `type` string from `js/src/rnskia`
@@ -336,6 +460,7 @@ impl Scene {
             py.insert_child(cy, index);
         }
         parent_node.children.push(child);
+        child_node.parent = Some(parent);
     }
 
     pub fn remove_child(&mut self, parent: NodeId, child: NodeId) {
@@ -414,6 +539,14 @@ impl Scene {
             let radius = style.shadow_radius.unwrap_or(0.0);
             let offset = style.shadow_offset.as_ref().map(|o| (o.width, o.height)).unwrap_or((0.0, 0.0));
             node.paint.shadow = Some(ViewShadow { color, radius, offset });
+        }
+        if let Some(color) = &style.color {
+            if let Some(c) = parse_color(color) {
+                node.paint.text_color = c;
+            }
+        }
+        if let Some(size) = style.font_size {
+            node.paint.font_size = size;
         }
 
         let Some(yoga) = node.yoga.as_mut() else {
@@ -587,12 +720,41 @@ impl Scene {
         self.root = Some(id);
     }
 
-    pub fn compute_layout(&mut self, width: f32, height: f32) {
+    /// `&self`, not `&mut self` — deliberately, even though nothing else
+    /// needs it shared: `measure_text` needs a way to read node data back
+    /// out of this exact `Scene` while Yoga is calling it reentrantly from
+    /// inside `calculate_layout` below, and the only way to give it one
+    /// without an actual second, conflicting borrow of the same thread-local
+    /// `RefCell<Scene>` (`js-host/src/host.rs`'s `with_scene`) is a raw
+    /// pointer to this call's own `&self`, valid for exactly its duration.
+    pub fn compute_layout(&self, width: f32, height: f32) {
         let Some(root) = self.root else { return };
-        let cell = self.nodes.get(&root).expect("unknown root id");
-        let mut node = cell.borrow_mut();
-        let yoga = node.yoga.as_mut().expect("root must be a layout node");
-        yoga.calculate_layout(width, height, Direction::LTR);
+        CURRENT_SCENE.with(|c| c.set(self as *const Scene));
+        {
+            let cell = self.nodes.get(&root).expect("unknown root id");
+            let mut node = cell.borrow_mut();
+            let yoga = node.yoga.as_mut().expect("root must be a layout node");
+            yoga.calculate_layout(width, height, Direction::LTR);
+        }
+        CURRENT_SCENE.with(|c| c.set(std::ptr::null()));
+    }
+
+    /// `measure_text`'s actual body — split out so it's an ordinary method
+    /// (borrow-checked normally) rather than living inside the `unsafe`
+    /// pointer-dereferencing `extern "C" fn` itself.
+    fn measure_text_node(&self, id: NodeId) -> Option<YogaSize> {
+        let node = self.nodes.get(&id)?.borrow();
+        let NodeKind::Text(text) = &node.kind else { return None };
+        let font_size = node
+            .parent
+            .and_then(|p| self.nodes.get(&p))
+            .map(|p| p.borrow().paint.font_size)
+            .unwrap_or(DEFAULT_FONT_SIZE);
+        let font = sized_font(font_size);
+        let (width, _bounds) = font.measure_str(text, None);
+        let (_, metrics) = font.metrics();
+        let height = metrics.descent - metrics.ascent + metrics.leading;
+        Some(YogaSize { width, height })
     }
 
     pub fn children_of(&self, id: NodeId) -> Vec<NodeId> {
@@ -609,18 +771,11 @@ impl Scene {
 
     pub fn draw(&self, canvas: &Canvas) {
         let Some(root) = self.root else { return };
-        // `Font::default()` carries an empty (0-glyph) typeface — Skia only
-        // picks a real one through the font manager. Resolved once per frame,
-        // not per node.
-        let typeface = FontMgr::default()
-            .legacy_make_typeface(None, FontStyle::default())
-            .expect("no system default typeface available");
-        let font = Font::from_typeface(typeface, 16.0);
-        self.draw_layout_node(root, 0.0, 0.0, canvas, &font);
+        self.draw_layout_node(root, 0.0, 0.0, canvas);
     }
 
-    fn draw_layout_node(&self, id: NodeId, parent_x: f32, parent_y: f32, canvas: &Canvas, font: &Font) {
-        let (x, y, w, h, text, is_canvas, children, background, opacity, overflow_hidden, radii, border_width, border_color, shadow) = {
+    fn draw_layout_node(&self, id: NodeId, parent_x: f32, parent_y: f32, canvas: &Canvas) {
+        let (x, y, w, h, text, is_canvas, children, background, opacity, overflow_hidden, radii, border_width, border_color, shadow, parent) = {
             let node = self.nodes.get(&id).expect("unknown node id").borrow();
             let yoga = node.yoga.as_ref().expect("draw_layout_node on a non-layout node");
             let x = parent_x + yoga.get_layout_left();
@@ -647,6 +802,7 @@ impl Scene {
                 node.paint.border_width,
                 node.paint.border_color,
                 node.paint.shadow,
+                node.parent,
             )
         };
 
@@ -695,9 +851,25 @@ impl Scene {
         }
 
         if let Some(text) = text {
-            let mut paint = Paint::new(Color4f::new(1.0, 1.0, 1.0, 1.0), None);
+            // `fontSize`/`color` live on the wrapping View (this node's
+            // parent — see `LayoutPaint::font_size`), not this Text node.
+            let (font_size, color) = parent
+                .and_then(|p| self.nodes.get(&p))
+                .map(|p| {
+                    let p = p.borrow();
+                    (p.paint.font_size, p.paint.text_color)
+                })
+                .unwrap_or((DEFAULT_FONT_SIZE, DEFAULT_TEXT_COLOR));
+            let font = sized_font(font_size);
+            // No line-wrapping support — a single line that doesn't fit its
+            // final (possibly flex-shrunk) width truncates with an ellipsis,
+            // the only sensible rendering for a non-wrapping Text.
+            let displayed = truncate_with_ellipsis(&text, &font, w);
+            let (_, metrics) = font.metrics();
+            let baseline_y = y + (h - (metrics.descent - metrics.ascent)) * 0.5 - metrics.ascent;
+            let mut paint = Paint::new(Color4f::new(color[0], color[1], color[2], color[3]), None);
             paint.set_anti_alias(true);
-            canvas.draw_str(&text, (x, y + h * 0.5 + 5.0), font, &paint);
+            canvas.draw_str(&displayed, (x, baseline_y), &font, &paint);
         }
 
         if is_canvas {
@@ -709,7 +881,7 @@ impl Scene {
             canvas.restore();
         } else {
             for child in children {
-                self.draw_layout_node(child, x, y, canvas, font);
+                self.draw_layout_node(child, x, y, canvas);
             }
         }
 
@@ -808,8 +980,7 @@ impl Scene {
         let y = node.props.get("y").and_then(Json::as_f64).unwrap_or(0.0) as f32;
         let size = node.props.get("size").and_then(Json::as_f64).unwrap_or(16.0) as f32;
         let color = node.props.get("color").and_then(parse_color).unwrap_or([1.0, 1.0, 1.0, 1.0]);
-        let Some(typeface) = FontMgr::default().legacy_make_typeface(None, FontStyle::default()) else { return };
-        let font = Font::from_typeface(typeface, size);
+        let font = sized_font(size);
         let mut paint = Paint::new(Color4f::new(color[0], color[1], color[2], color[3]), None);
         paint.set_anti_alias(true);
         canvas.draw_str(text, (ox + x, oy + y), &font, &paint);

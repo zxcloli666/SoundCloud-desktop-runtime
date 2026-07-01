@@ -130,7 +130,14 @@ function CoreUiProbe() {
         <Avatar url={null} size={56} ring />
         <Button label="Слушать" onPress={() => {}} />
       </View>
-      <Card title="Тестовый трек" subtitle="Тестовый артист" width={140} onPress={() => {}} />
+      {/* Deliberately long title/subtitle — exercises numberOfLines={1}
+          ellipsis truncation (task #16), previously a no-op. */}
+      <Card
+        title="Очень длинное название трека, которое точно не влезет"
+        subtitle="Очень длинное имя артиста, тоже не влезающее в карточку"
+        width={140}
+        onPress={() => {}}
+      />
       <TrackRow index={0} title="Первый трек" artist="Артист" durationMs={183000} active onPress={() => {}} />
       {/* Exercises ScrollView's contentContainerStyle (gap/edge padding) —
           previously silently dropped (only `style` was read). */}
