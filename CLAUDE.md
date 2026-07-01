@@ -133,13 +133,20 @@ Fabric C++:
   ~1.5с и точно оседает на target. **ConcurrentRoot всё ещё НЕ доделан**
   (см. спайк 4b) — низкий приоритет, в конце (см. task list, отдельно оценили:
   выигрыш в отзывчивости под нагрузкой, не в сыром перфе разового рендера).
-  **Найден и НЕ связан с reanimated баг**: на тайловых WM (Hyprland игнорирует
-  `with_inner_size`, реально даёт 847x1388 вместо 1024x640) GPU-скриншот
-  (`snapshot_png()`) показывает фон только в верхних ~640px, хотя Yoga-layout
-  и offscreen CPU-рендер (regression-тест `fills_arbitrary_aspect_ratio_test`)
-  для ТОЙ ЖЕ сцены на 847x1388 — верны. Значит баг в GL-surface/resize-таймингах
-  (`skia-desktop/gl_surface.rs`), не в Scene/Yoga/reconciler — расследовать
-  отдельно (задача в task list), не блокирует остальное.
+  **Найден и НЕ связан с reanimated баг (ИСПРАВЛЕН 2026-07-02)**: на тайловых
+  WM (Hyprland игнорирует `with_inner_size`, реально даёт 847x1388 вместо
+  1024x640) GPU-скриншот (`snapshot_png()`) показывал фон только в верхних
+  ~640px, хотя Yoga-layout и offscreen CPU-рендер (regression-тест
+  `fills_arbitrary_aspect_ratio_test`) для ТОЙ ЖЕ сцены на 847x1388 — верны.
+  Корень (`skia-desktop/gl_surface.rs`): `resize()` передавал корректный новый
+  размер в `gl_surface.resize()`, но затем `create_surface()` заново вызывал
+  `window.inner_size()` вместо переиспользования того же размера — на Wayland
+  (Hyprland) свежедоставленный `WindowEvent::Resized`-payload может опережать
+  то, что `inner_size()` отдаёт В ЭТОТ МОМЕНТ (ресайз поверхности — двухшаговый
+  негошиэйт, не синхронный), так что Skia-поверхность пересоздавалась под
+  СТАРЫЙ размер. Фикс — `create_surface` принимает `(width, height)` явным
+  параметром (единый источник истины и в `new()`, и в `resize()`), больше не
+  переспрашивает `window.inner_size()` самостоятельно.
 
 - **Спайк 7a**: настоящий `@sc/ui` (не копия!) рендерится через наш pipeline.
   `js/build.mjs` резолвит `react-native`/`@shopify/react-native-skia`/

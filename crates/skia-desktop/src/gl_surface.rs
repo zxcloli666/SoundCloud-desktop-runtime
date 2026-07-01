@@ -126,7 +126,7 @@ impl GlWindowSurface {
 
         let num_samples = gl_config.num_samples() as usize;
         let stencil_size = gl_config.stencil_size() as usize;
-        let surface = Self::create_surface(&window, fb_info, &mut gr_context, num_samples, stencil_size);
+        let surface = Self::create_surface((width, height), fb_info, &mut gr_context, num_samples, stencil_size);
 
         Self {
             surface,
@@ -140,17 +140,24 @@ impl GlWindowSurface {
         }
     }
 
+    /// Takes `(width, height)` explicitly rather than re-querying
+    /// `window.inner_size()` — on Wayland compositors (found on Hyprland),
+    /// the freshly delivered `WindowEvent::Resized` payload can be ahead of
+    /// what `inner_size()` reports at that exact moment (surface resize is a
+    /// two-step negotiate, not synchronous), so re-deriving it here produced
+    /// a Skia surface still sized to the *previous* dimensions — GPU
+    /// snapshots looked cut off at the old size even though the scene's
+    /// Yoga layout (computed from the caller's trusted size) was correct.
     fn create_surface(
-        window: &Window,
+        (width, height): (u32, u32),
         fb_info: FramebufferInfo,
         gr_context: &mut gpu::DirectContext,
         num_samples: usize,
         stencil_size: usize,
     ) -> Surface {
-        let size = window.inner_size();
         let size = (
-            size.width.try_into().expect("width overflow"),
-            size.height.try_into().expect("height overflow"),
+            width.try_into().expect("width overflow"),
+            height.try_into().expect("height overflow"),
         );
         let backend_render_target =
             backend_render_targets::make_gl(size, num_samples, stencil_size, fb_info);
@@ -172,7 +179,7 @@ impl GlWindowSurface {
             NonZeroU32::new(height.max(1)).unwrap(),
         );
         self.surface = Self::create_surface(
-            &self.window,
+            (width, height),
             self.fb_info,
             &mut self.gr_context,
             self.num_samples,
