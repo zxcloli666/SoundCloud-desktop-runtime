@@ -7,6 +7,11 @@
 //!   `@shopify/react-native-skia`'s JSX surface (see Desktop-Runtime/CLAUDE.md)
 //!   without replicating its internal two-reconciler/SkPicture architecture —
 //!   we own the whole pipeline, so one tree is enough.
+//!
+//! Style/color coverage is intentionally wide (percent dimensions, absolute
+//! positioning, per-corner radii, CSS color strings) rather than the minimum
+//! `@sc/ui` happens to use today — the point is not having to keep coming
+//! back here every time a new screen touches one more RN style prop.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -16,9 +21,9 @@ use serde::Deserialize;
 use serde_json::Value as Json;
 use skia_safe::{
     BlendMode, BlurStyle, Canvas, Color4f, Font, FontMgr, FontStyle, MaskFilter, Paint, PaintStyle,
-    Point, RRect, Rect, Shader, TileMode, gradient, image_filters,
+    Point, RRect, Rect, Shader, TileMode, Vector, canvas::SaveLayerRec, gradient, image_filters,
 };
-use yoga::{Align, Direction, Edge, FlexDirection, Justify, Node as YogaNode, StyleUnit};
+use yoga::{Align, Direction, Edge, FlexDirection, Justify, Node as YogaNode, PositionType, StyleUnit, Wrap};
 
 pub type NodeId = u32;
 
@@ -29,19 +34,78 @@ pub enum NodeKind {
     Circle,
     Rect,
     RoundedRect,
+    SkPath,
+    SkText,
+    /// No asset-decoding pipeline yet — renders as a placeholder box the
+    /// requested size, same honest-stub approach as `react-native`'s `Image`.
+    SkImage,
     Group,
     Blur,
     RadialGradient,
     LinearGradient,
+    /// Configures the parent shape's paint directly (color/opacity/blendMode)
+    /// — same "child configures parent" pattern as Blur/gradients.
+    Paint,
     Box,
     BoxShadow,
+}
+
+/// Radii for the four corners, clockwise from top-left — matches CSS/RN's
+/// per-corner `border*Radius` props exactly.
+#[derive(Clone, Copy)]
+struct CornerRadii {
+    top_left: f32,
+    top_right: f32,
+    bottom_right: f32,
+    bottom_left: f32,
+}
+
+impl CornerRadii {
+    fn uniform(r: f32) -> Self {
+        Self { top_left: r, top_right: r, bottom_right: r, bottom_left: r }
+    }
+
+    fn is_uniform(&self) -> bool {
+        self.top_left == self.top_right && self.top_right == self.bottom_right && self.bottom_right == self.bottom_left
+    }
+
+    fn rrect(&self, rect: Rect) -> RRect {
+        if self.is_uniform() {
+            return RRect::new_rect_xy(rect, self.top_left, self.top_left);
+        }
+        RRect::new_rect_radii(
+            rect,
+            &[
+                Vector::new(self.top_left, self.top_left),
+                Vector::new(self.top_right, self.top_right),
+                Vector::new(self.bottom_right, self.bottom_right),
+                Vector::new(self.bottom_left, self.bottom_left),
+            ],
+        )
+    }
+}
+
+#[derive(Default)]
+struct LayoutPaint {
+    background: Option<[f32; 4]>,
+    opacity: f32,
+    overflow_hidden: bool,
+    radii: CornerRadii,
+    border_width: f32,
+    border_color: Option<[f32; 4]>,
+}
+
+impl Default for CornerRadii {
+    fn default() -> Self {
+        Self::uniform(0.0)
+    }
 }
 
 pub struct SceneNode {
     kind: NodeKind,
     /// `None` for Skia draw nodes — they don't participate in flexbox.
     yoga: Option<YogaNode>,
-    background: Option<[f32; 4]>,
+    paint: LayoutPaint,
     /// Raw props for Skia draw nodes, parsed against their kind at draw time
     /// (the prop shapes are too varied per type to justify one big struct).
     props: Json,
@@ -50,11 +114,17 @@ pub struct SceneNode {
 
 impl SceneNode {
     fn layout(kind: NodeKind) -> Self {
-        Self { kind, yoga: Some(YogaNode::new()), background: None, props: Json::Null, children: Vec::new() }
+        Self {
+            kind,
+            yoga: Some(YogaNode::new()),
+            paint: LayoutPaint { opacity: 1.0, ..Default::default() },
+            props: Json::Null,
+            children: Vec::new(),
+        }
     }
 
     fn sk(kind: NodeKind) -> Self {
-        Self { kind, yoga: None, background: None, props: Json::Null, children: Vec::new() }
+        Self { kind, yoga: None, paint: LayoutPaint::default(), props: Json::Null, children: Vec::new() }
     }
 
     fn text(text: String) -> Self {
@@ -63,7 +133,13 @@ impl SceneNode {
         // lands with real text support, not here.
         yoga.set_width(pt(text.chars().count() as f32 * 8.0 + 4.0));
         yoga.set_height(pt(20.0));
-        Self { kind: NodeKind::Text(text), yoga: Some(yoga), background: None, props: Json::Null, children: Vec::new() }
+        Self {
+            kind: NodeKind::Text(text),
+            yoga: Some(yoga),
+            paint: LayoutPaint { opacity: 1.0, ..Default::default() },
+            props: Json::Null,
+            children: Vec::new(),
+        }
     }
 }
 
@@ -71,21 +147,90 @@ fn pt(v: f32) -> StyleUnit {
     StyleUnit::Point(OrderedFloat(v))
 }
 
-/// Mirrors the subset of `@sc/ui` style props this spike proves out: box
-/// layout (flex/padding/margin) and a background fill. Grows as later spikes
-/// need more of RN's style surface.
+/// A style dimension: points (`120`) or a percentage string (`"50%"`) — RN
+/// accepts both everywhere width/height/position/margin/padding are used.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum Dimension {
+    Point(f32),
+    Percent(String),
+}
+
+impl Dimension {
+    fn to_style_unit(&self) -> StyleUnit {
+        match self {
+            Dimension::Point(p) => pt(*p),
+            Dimension::Percent(s) => {
+                let pct = s.trim_end_matches('%').trim().parse::<f32>().unwrap_or(0.0);
+                StyleUnit::Percent(OrderedFloat(pct))
+            }
+        }
+    }
+}
+
+/// Wide coverage of RN's `StyleSheet` surface — percent dimensions, absolute
+/// positioning, gaps, per-corner radii, border, opacity, overflow — not just
+/// what `@sc/ui` happens to use today.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StyleInput {
-    pub width: Option<f32>,
-    pub height: Option<f32>,
+    pub width: Option<Dimension>,
+    pub height: Option<Dimension>,
+    pub min_width: Option<Dimension>,
+    pub max_width: Option<Dimension>,
+    pub min_height: Option<Dimension>,
+    pub max_height: Option<Dimension>,
+
+    pub flex: Option<f32>,
     pub flex_grow: Option<f32>,
+    pub flex_shrink: Option<f32>,
+    pub flex_basis: Option<Dimension>,
     pub flex_direction: Option<String>,
+    pub flex_wrap: Option<String>,
     pub justify_content: Option<String>,
     pub align_items: Option<String>,
-    pub padding: Option<f32>,
-    pub margin: Option<f32>,
-    pub background_color: Option<[f32; 4]>,
+    pub align_self: Option<String>,
+    pub align_content: Option<String>,
+    pub aspect_ratio: Option<f32>,
+    pub display: Option<String>,
+
+    pub position: Option<String>,
+    pub left: Option<Dimension>,
+    pub right: Option<Dimension>,
+    pub top: Option<Dimension>,
+    pub bottom: Option<Dimension>,
+
+    pub padding: Option<Dimension>,
+    pub padding_horizontal: Option<Dimension>,
+    pub padding_vertical: Option<Dimension>,
+    pub padding_left: Option<Dimension>,
+    pub padding_right: Option<Dimension>,
+    pub padding_top: Option<Dimension>,
+    pub padding_bottom: Option<Dimension>,
+
+    pub margin: Option<Dimension>,
+    pub margin_horizontal: Option<Dimension>,
+    pub margin_vertical: Option<Dimension>,
+    pub margin_left: Option<Dimension>,
+    pub margin_right: Option<Dimension>,
+    pub margin_top: Option<Dimension>,
+    pub margin_bottom: Option<Dimension>,
+
+    pub gap: Option<f32>,
+    pub row_gap: Option<f32>,
+    pub column_gap: Option<f32>,
+
+    pub opacity: Option<f32>,
+    pub overflow: Option<String>,
+    pub background_color: Option<Json>,
+
+    pub border_radius: Option<f32>,
+    pub border_top_left_radius: Option<f32>,
+    pub border_top_right_radius: Option<f32>,
+    pub border_bottom_left_radius: Option<f32>,
+    pub border_bottom_right_radius: Option<f32>,
+    pub border_width: Option<f32>,
+    pub border_color: Option<Json>,
 }
 
 #[derive(Default)]
@@ -123,10 +268,14 @@ impl Scene {
             "Circle" => NodeKind::Circle,
             "Rect" => NodeKind::Rect,
             "RoundedRect" => NodeKind::RoundedRect,
-            "Group" => NodeKind::Group,
-            "Blur" => NodeKind::Blur,
+            "Path" => NodeKind::SkPath,
+            "Text" => NodeKind::SkText,
+            "Image" => NodeKind::SkImage,
+            "Group" | "BackdropBlur" | "BackdropFilter" | "Mask" => NodeKind::Group,
+            "Blur" | "ColorMatrix" | "Shader" => NodeKind::Blur,
             "RadialGradient" => NodeKind::RadialGradient,
             "LinearGradient" => NodeKind::LinearGradient,
+            "Paint" => NodeKind::Paint,
             "Box" => NodeKind::Box,
             "BoxShadow" => NodeKind::BoxShadow,
             other => panic!("unknown Skia node kind: {other}"),
@@ -162,17 +311,63 @@ impl Scene {
     pub fn set_style(&mut self, id: NodeId, style: StyleInput) {
         let cell = self.nodes.get(&id).expect("unknown node id");
         let mut node = cell.borrow_mut();
+
+        let uniform_radius = style.border_radius.unwrap_or(0.0);
+        node.paint.radii = CornerRadii {
+            top_left: style.border_top_left_radius.unwrap_or(uniform_radius),
+            top_right: style.border_top_right_radius.unwrap_or(uniform_radius),
+            bottom_right: style.border_bottom_right_radius.unwrap_or(uniform_radius),
+            bottom_left: style.border_bottom_left_radius.unwrap_or(uniform_radius),
+        };
+        if let Some(opacity) = style.opacity {
+            node.paint.opacity = opacity;
+        }
+        if let Some(overflow) = style.overflow.as_deref() {
+            node.paint.overflow_hidden = overflow == "hidden";
+        }
+        if let Some(bg) = &style.background_color {
+            node.paint.background = parse_color(bg);
+        }
+        if let Some(bw) = style.border_width {
+            node.paint.border_width = bw;
+        }
+        if let Some(bc) = &style.border_color {
+            node.paint.border_color = parse_color(bc);
+        }
+
         let Some(yoga) = node.yoga.as_mut() else {
             return;
         };
-        if let Some(w) = style.width {
-            yoga.set_width(pt(w));
+
+        if let Some(w) = &style.width {
+            yoga.set_width(w.to_style_unit());
         }
-        if let Some(h) = style.height {
-            yoga.set_height(pt(h));
+        if let Some(h) = &style.height {
+            yoga.set_height(h.to_style_unit());
+        }
+        if let Some(v) = &style.min_width {
+            yoga.set_min_width(v.to_style_unit());
+        }
+        if let Some(v) = &style.max_width {
+            yoga.set_max_width(v.to_style_unit());
+        }
+        if let Some(v) = &style.min_height {
+            yoga.set_min_height(v.to_style_unit());
+        }
+        if let Some(v) = &style.max_height {
+            yoga.set_max_height(v.to_style_unit());
+        }
+        if let Some(flex) = style.flex {
+            yoga.set_flex(flex);
         }
         if let Some(fg) = style.flex_grow {
             yoga.set_flex_grow(fg);
+        }
+        if let Some(fs) = style.flex_shrink {
+            yoga.set_flex_shrink(fs);
+        }
+        if let Some(fb) = &style.flex_basis {
+            yoga.set_flex_basis(fb.to_style_unit());
         }
         if let Some(dir) = style.flex_direction.as_deref() {
             let dir = match dir {
@@ -183,37 +378,120 @@ impl Scene {
             };
             yoga.set_flex_direction(dir);
         }
+        if let Some(wrap) = style.flex_wrap.as_deref() {
+            let wrap = match wrap {
+                "wrap" => Wrap::Wrap,
+                "wrap-reverse" => Wrap::WrapReverse,
+                _ => Wrap::NoWrap,
+            };
+            yoga.set_flex_wrap(wrap);
+        }
         if let Some(justify) = style.justify_content.as_deref() {
             let justify = match justify {
                 "center" => Justify::Center,
                 "flex-end" => Justify::FlexEnd,
                 "space-between" => Justify::SpaceBetween,
                 "space-around" => Justify::SpaceAround,
+                "space-evenly" => Justify::SpaceEvenly,
                 _ => Justify::FlexStart,
             };
             yoga.set_justify_content(justify);
         }
         if let Some(align) = style.align_items.as_deref() {
-            let align = match align {
-                "center" => Align::Center,
-                "flex-end" => Align::FlexEnd,
-                "stretch" => Align::Stretch,
-                _ => Align::FlexStart,
-            };
-            yoga.set_align_items(align);
+            yoga.set_align_items(parse_align(align));
         }
-        if let Some(p) = style.padding {
+        if let Some(align) = style.align_self.as_deref() {
+            yoga.set_align_self(parse_align(align));
+        }
+        if let Some(align) = style.align_content.as_deref() {
+            yoga.set_align_content(parse_align(align));
+        }
+        if let Some(ratio) = style.aspect_ratio {
+            yoga.set_aspect_ratio(ratio);
+        }
+        if let Some(display) = style.display.as_deref() {
+            yoga.set_display(if display == "none" { yoga::Display::None } else { yoga::Display::Flex });
+        }
+        if let Some(position) = style.position.as_deref() {
+            yoga.set_position_type(if position == "absolute" { PositionType::Absolute } else { PositionType::Relative });
+        }
+        if let Some(v) = &style.left {
+            yoga.set_position(Edge::Left, v.to_style_unit());
+        }
+        if let Some(v) = &style.right {
+            yoga.set_position(Edge::Right, v.to_style_unit());
+        }
+        if let Some(v) = &style.top {
+            yoga.set_position(Edge::Top, v.to_style_unit());
+        }
+        if let Some(v) = &style.bottom {
+            yoga.set_position(Edge::Bottom, v.to_style_unit());
+        }
+
+        if let Some(p) = &style.padding {
             for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
-                yoga.set_padding(edge, pt(p));
+                yoga.set_padding(edge, p.to_style_unit());
             }
         }
-        if let Some(m) = style.margin {
-            for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
-                yoga.set_margin(edge, pt(m));
+        if let Some(p) = &style.padding_horizontal {
+            for edge in [Edge::Left, Edge::Right] {
+                yoga.set_padding(edge, p.to_style_unit());
             }
         }
-        if let Some(bg) = style.background_color {
-            node.background = Some(bg);
+        if let Some(p) = &style.padding_vertical {
+            for edge in [Edge::Top, Edge::Bottom] {
+                yoga.set_padding(edge, p.to_style_unit());
+            }
+        }
+        if let Some(p) = &style.padding_left {
+            yoga.set_padding(Edge::Left, p.to_style_unit());
+        }
+        if let Some(p) = &style.padding_right {
+            yoga.set_padding(Edge::Right, p.to_style_unit());
+        }
+        if let Some(p) = &style.padding_top {
+            yoga.set_padding(Edge::Top, p.to_style_unit());
+        }
+        if let Some(p) = &style.padding_bottom {
+            yoga.set_padding(Edge::Bottom, p.to_style_unit());
+        }
+
+        if let Some(m) = &style.margin {
+            for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
+                yoga.set_margin(edge, m.to_style_unit());
+            }
+        }
+        if let Some(m) = &style.margin_horizontal {
+            for edge in [Edge::Left, Edge::Right] {
+                yoga.set_margin(edge, m.to_style_unit());
+            }
+        }
+        if let Some(m) = &style.margin_vertical {
+            for edge in [Edge::Top, Edge::Bottom] {
+                yoga.set_margin(edge, m.to_style_unit());
+            }
+        }
+        if let Some(m) = &style.margin_left {
+            yoga.set_margin(Edge::Left, m.to_style_unit());
+        }
+        if let Some(m) = &style.margin_right {
+            yoga.set_margin(Edge::Right, m.to_style_unit());
+        }
+        if let Some(m) = &style.margin_top {
+            yoga.set_margin(Edge::Top, m.to_style_unit());
+        }
+        if let Some(m) = &style.margin_bottom {
+            yoga.set_margin(Edge::Bottom, m.to_style_unit());
+        }
+
+        if let Some(g) = style.gap {
+            yoga.set_gap(yoga::Gutter::All, pt(g));
+        }
+        if let Some(g) = style.row_gap {
+            yoga.set_gap(yoga::Gutter::Row, pt(g));
+        }
+        if let Some(g) = style.column_gap {
+            yoga.set_gap(yoga::Gutter::Column, pt(g));
         }
     }
 
@@ -261,7 +539,7 @@ impl Scene {
     }
 
     fn draw_layout_node(&self, id: NodeId, parent_x: f32, parent_y: f32, canvas: &Canvas, font: &Font) {
-        let (x, y, w, h, background, text, is_canvas, children) = {
+        let (x, y, w, h, text, is_canvas, children, background, opacity, overflow_hidden, radii, border_width, border_color) = {
             let node = self.nodes.get(&id).expect("unknown node id").borrow();
             let yoga = node.yoga.as_ref().expect("draw_layout_node on a non-layout node");
             let x = parent_x + yoga.get_layout_left();
@@ -273,13 +551,51 @@ impl Scene {
                 _ => None,
             };
             let is_canvas = matches!(node.kind, NodeKind::Canvas);
-            (x, y, w, h, node.background, text, is_canvas, node.children.clone())
+            (
+                x,
+                y,
+                w,
+                h,
+                text,
+                is_canvas,
+                node.children.clone(),
+                node.paint.background,
+                node.paint.opacity,
+                node.paint.overflow_hidden,
+                node.paint.radii,
+                node.paint.border_width,
+                node.paint.border_color,
+            )
         };
+
+        let rect = Rect::from_xywh(x, y, w, h);
+        let needs_layer = opacity < 1.0;
+        if needs_layer {
+            let mut layer_paint = Paint::default();
+            layer_paint.set_alpha_f(opacity.clamp(0.0, 1.0));
+            canvas.save_layer(&SaveLayerRec::default().paint(&layer_paint));
+        } else {
+            canvas.save();
+        }
 
         if let Some([r, g, b, a]) = background {
             let mut paint = Paint::new(Color4f::new(r, g, b, a), None);
             paint.set_anti_alias(true);
-            canvas.draw_rrect(RRect::new_rect_xy(Rect::from_xywh(x, y, w, h), 8.0, 8.0), &paint);
+            canvas.draw_rrect(radii.rrect(rect), &paint);
+        }
+
+        if border_width > 0.0 {
+            if let Some([r, g, b, a]) = border_color {
+                let mut paint = Paint::new(Color4f::new(r, g, b, a), None);
+                paint.set_anti_alias(true);
+                paint.set_style(PaintStyle::Stroke);
+                paint.set_stroke_width(border_width);
+                canvas.draw_rrect(radii.rrect(rect), &paint);
+            }
+        }
+
+        if overflow_hidden {
+            canvas.clip_rrect(radii.rrect(rect), None, Some(true));
         }
 
         if let Some(text) = text {
@@ -290,17 +606,18 @@ impl Scene {
 
         if is_canvas {
             canvas.save();
-            canvas.clip_rect(Rect::from_xywh(x, y, w, h), None, Some(true));
+            canvas.clip_rect(rect, None, Some(true));
             for child in children {
                 self.draw_sk_node(child, x, y, canvas);
             }
             canvas.restore();
-            return;
+        } else {
+            for child in children {
+                self.draw_layout_node(child, x, y, canvas, font);
+            }
         }
 
-        for child in children {
-            self.draw_layout_node(child, x, y, canvas, font);
-        }
+        canvas.restore();
     }
 
     /// Skia draw nodes: no Yoga, raw pixel coordinates from `props`, offset by
@@ -312,11 +629,14 @@ impl Scene {
             NodeKind::Circle => self.draw_circle(&node, ox, oy, canvas),
             NodeKind::Rect => self.draw_rect_shape(&node, ox, oy, canvas),
             NodeKind::RoundedRect => self.draw_rounded_rect(&node, ox, oy, canvas),
+            NodeKind::SkPath => self.draw_sk_path(&node, ox, oy, canvas),
+            NodeKind::SkText => self.draw_sk_text(&node, ox, oy, canvas),
+            NodeKind::SkImage => self.draw_sk_image_placeholder(&node, ox, oy, canvas),
             NodeKind::Group => self.draw_group(&node, ox, oy, canvas),
             NodeKind::Box => self.draw_box(&node, ox, oy, canvas),
             // Configuration-only nodes: meaningful as a child of Circle/RRect/
             // Box/Group, not as something independently drawn.
-            NodeKind::Blur | NodeKind::RadialGradient | NodeKind::LinearGradient | NodeKind::BoxShadow => {}
+            NodeKind::Blur | NodeKind::RadialGradient | NodeKind::LinearGradient | NodeKind::Paint | NodeKind::BoxShadow => {}
             NodeKind::View | NodeKind::Text(_) | NodeKind::Canvas => {
                 unreachable!("layout node encountered in the Skia subtree")
             }
@@ -324,7 +644,7 @@ impl Scene {
     }
 
     fn shape_paint(&self, node: &SceneNode, cx: f32, cy: f32, radius: f32) -> Paint {
-        let color = node.props.get("color").and_then(json_color).unwrap_or([1.0, 1.0, 1.0, 1.0]);
+        let color = node.props.get("color").and_then(parse_color).unwrap_or([1.0, 1.0, 1.0, 1.0]);
         let mut paint = Paint::new(Color4f::new(color[0], color[1], color[2], color[3]), None);
         paint.set_anti_alias(true);
         match node.props.get("style").and_then(Json::as_str) {
@@ -337,6 +657,9 @@ impl Scene {
                 paint.set_style(PaintStyle::Fill);
             }
         };
+        if let Some(opacity) = node.props.get("opacity").and_then(Json::as_f64) {
+            paint.set_alpha_f(opacity as f32);
+        }
 
         for &child_id in &node.children {
             let child = self.nodes.get(&child_id).expect("unknown child id").borrow();
@@ -357,10 +680,53 @@ impl Scene {
                         paint.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, sigma, false));
                     }
                 }
+                NodeKind::Paint => {
+                    if let Some(color) = child.props.get("color").and_then(parse_color) {
+                        paint.set_color4f(Color4f::new(color[0], color[1], color[2], color[3]), None);
+                    }
+                    if let Some(opacity) = child.props.get("opacity").and_then(Json::as_f64) {
+                        paint.set_alpha_f(opacity as f32);
+                    }
+                    if let Some(mode) = child.props.get("blendMode").and_then(Json::as_str).and_then(json_blend_mode) {
+                        paint.set_blend_mode(mode);
+                    }
+                }
                 _ => {}
             }
         }
         paint
+    }
+
+    fn draw_sk_path(&self, node: &SceneNode, ox: f32, oy: f32, canvas: &Canvas) {
+        let Some(svg) = node.props.get("path").and_then(Json::as_str) else { return };
+        let Some(path) = skia_safe::Path::from_svg(svg) else { return };
+        let path = path.make_offset((ox, oy));
+        let bounds = *path.bounds();
+        let paint = self.shape_paint(node, bounds.center_x(), bounds.center_y(), bounds.width().max(bounds.height()) * 0.5);
+        canvas.draw_path(&path, &paint);
+    }
+
+    fn draw_sk_text(&self, node: &SceneNode, ox: f32, oy: f32, canvas: &Canvas) {
+        let Some(text) = node.props.get("text").and_then(Json::as_str) else { return };
+        let x = node.props.get("x").and_then(Json::as_f64).unwrap_or(0.0) as f32;
+        let y = node.props.get("y").and_then(Json::as_f64).unwrap_or(0.0) as f32;
+        let size = node.props.get("size").and_then(Json::as_f64).unwrap_or(16.0) as f32;
+        let color = node.props.get("color").and_then(parse_color).unwrap_or([1.0, 1.0, 1.0, 1.0]);
+        let Some(typeface) = FontMgr::default().legacy_make_typeface(None, FontStyle::default()) else { return };
+        let font = Font::from_typeface(typeface, size);
+        let mut paint = Paint::new(Color4f::new(color[0], color[1], color[2], color[3]), None);
+        paint.set_anti_alias(true);
+        canvas.draw_str(text, (ox + x, oy + y), &font, &paint);
+    }
+
+    /// No asset-decoding pipeline yet — draws the requested rect as a flat
+    /// placeholder so layouts using `<Image>` inside a Canvas are visible and
+    /// correctly sized rather than silently blank.
+    fn draw_sk_image_placeholder(&self, node: &SceneNode, ox: f32, oy: f32, canvas: &Canvas) {
+        let Some(rect) = json_rect(&node.props) else { return };
+        let mut paint = Paint::new(Color4f::new(0.5, 0.5, 0.5, 0.4), None);
+        paint.set_anti_alias(true);
+        canvas.draw_rect(rect.with_offset((ox, oy)), &paint);
     }
 
     fn draw_circle(&self, node: &SceneNode, ox: f32, oy: f32, canvas: &Canvas) {
@@ -404,7 +770,7 @@ impl Scene {
             if let Some(mode) = blend_mode {
                 layer_paint.set_blend_mode(mode);
             }
-            canvas.save_layer(&skia_safe::canvas::SaveLayerRec::default().paint(&layer_paint));
+            canvas.save_layer(&SaveLayerRec::default().paint(&layer_paint));
         }
 
         for &child in &node.children {
@@ -448,7 +814,7 @@ impl Scene {
         let dx = shadow.props.get("dx").and_then(Json::as_f64).unwrap_or(0.0) as f32;
         let dy = shadow.props.get("dy").and_then(Json::as_f64).unwrap_or(0.0) as f32;
         let blur = shadow.props.get("blur").and_then(Json::as_f64).unwrap_or(0.0) as f32;
-        let color = shadow.props.get("color").and_then(json_color).unwrap_or([0.0, 0.0, 0.0, 1.0]);
+        let color = shadow.props.get("color").and_then(parse_color).unwrap_or([0.0, 0.0, 0.0, 1.0]);
         let inner = shadow.props.get("inner").and_then(Json::as_bool).unwrap_or(false);
         let sk_color = Color4f::new(color[0], color[1], color[2], color[3]).to_color();
 
@@ -465,14 +831,110 @@ impl Scene {
     }
 }
 
-fn json_color(v: &Json) -> Option<[f32; 4]> {
-    let arr = v.as_array()?;
-    Some([
-        arr.first()?.as_f64()? as f32,
-        arr.get(1)?.as_f64()? as f32,
-        arr.get(2)?.as_f64()? as f32,
-        arr.get(3).and_then(Json::as_f64).unwrap_or(1.0) as f32,
-    ])
+fn parse_align(name: &str) -> Align {
+    match name {
+        "center" => Align::Center,
+        "flex-end" => Align::FlexEnd,
+        "stretch" => Align::Stretch,
+        "baseline" => Align::Baseline,
+        "space-between" => Align::SpaceBetween,
+        "space-around" => Align::SpaceAround,
+        _ => Align::FlexStart,
+    }
+}
+
+/// Accepts our original `[r, g, b, a]` (0-1 floats) convention *and* real CSS
+/// color strings (`@sc/ui`'s theme tokens are plain hex/rgba strings) —
+/// hex (#rgb/#rrggbb/#rrggbbaa), rgb()/rgba(), "transparent", and common
+/// named colors.
+fn parse_color(v: &Json) -> Option<[f32; 4]> {
+    if let Some(arr) = v.as_array() {
+        return Some([
+            arr.first()?.as_f64()? as f32,
+            arr.get(1)?.as_f64()? as f32,
+            arr.get(2)?.as_f64()? as f32,
+            arr.get(3).and_then(Json::as_f64).unwrap_or(1.0) as f32,
+        ]);
+    }
+    parse_css_color(v.as_str()?)
+}
+
+fn parse_css_color(s: &str) -> Option<[f32; 4]> {
+    let s = s.trim();
+    if s.eq_ignore_ascii_case("transparent") {
+        return Some([0.0, 0.0, 0.0, 0.0]);
+    }
+    if let Some(hex) = s.strip_prefix('#') {
+        return parse_hex_color(hex);
+    }
+    if let Some(inner) = s.strip_prefix("rgba(").and_then(|s| s.strip_suffix(')')) {
+        return parse_rgb_components(inner, true);
+    }
+    if let Some(inner) = s.strip_prefix("rgb(").and_then(|s| s.strip_suffix(')')) {
+        return parse_rgb_components(inner, false);
+    }
+    named_color(&s.to_ascii_lowercase())
+}
+
+fn parse_hex_color(hex: &str) -> Option<[f32; 4]> {
+    let nibble = |c: char| -> Option<u8> { c.to_digit(16).map(|d| d as u8) };
+    let byte_from_nibble = |c: char| -> Option<f32> { nibble(c).map(|d| (d * 17) as f32 / 255.0) };
+    let byte_pair = |s: &str| -> Option<f32> { Some(u8::from_str_radix(s, 16).ok()? as f32 / 255.0) };
+    match hex.len() {
+        3 => {
+            let mut c = hex.chars();
+            Some([byte_from_nibble(c.next()?)?, byte_from_nibble(c.next()?)?, byte_from_nibble(c.next()?)?, 1.0])
+        }
+        4 => {
+            let mut c = hex.chars();
+            Some([
+                byte_from_nibble(c.next()?)?,
+                byte_from_nibble(c.next()?)?,
+                byte_from_nibble(c.next()?)?,
+                byte_from_nibble(c.next()?)?,
+            ])
+        }
+        6 => Some([byte_pair(&hex[0..2])?, byte_pair(&hex[2..4])?, byte_pair(&hex[4..6])?, 1.0]),
+        8 => Some([byte_pair(&hex[0..2])?, byte_pair(&hex[2..4])?, byte_pair(&hex[4..6])?, byte_pair(&hex[6..8])?]),
+        _ => None,
+    }
+}
+
+fn parse_rgb_components(inner: &str, has_alpha: bool) -> Option<[f32; 4]> {
+    let parts: Vec<&str> = inner.split(',').map(str::trim).collect();
+    let component = |s: &str| -> Option<f32> { Some(s.parse::<f32>().ok()? / 255.0) };
+    let r = component(parts.first()?)?;
+    let g = component(parts.get(1)?)?;
+    let b = component(parts.get(2)?)?;
+    let a = if has_alpha { parts.get(3)?.parse::<f32>().ok()? } else { 1.0 };
+    Some([r, g, b, a])
+}
+
+fn named_color(name: &str) -> Option<[f32; 4]> {
+    Some(match name {
+        "white" => [1.0, 1.0, 1.0, 1.0],
+        "black" => [0.0, 0.0, 0.0, 1.0],
+        "red" => [1.0, 0.0, 0.0, 1.0],
+        "green" => [0.0, 0.502, 0.0, 1.0],
+        "lime" => [0.0, 1.0, 0.0, 1.0],
+        "blue" => [0.0, 0.0, 1.0, 1.0],
+        "gray" | "grey" => [0.502, 0.502, 0.502, 1.0],
+        "yellow" => [1.0, 1.0, 0.0, 1.0],
+        "orange" => [1.0, 0.647, 0.0, 1.0],
+        "purple" => [0.502, 0.0, 0.502, 1.0],
+        "pink" => [1.0, 0.753, 0.796, 1.0],
+        "cyan" | "aqua" => [0.0, 1.0, 1.0, 1.0],
+        "magenta" | "fuchsia" => [1.0, 0.0, 1.0, 1.0],
+        "navy" => [0.0, 0.0, 0.502, 1.0],
+        "teal" => [0.0, 0.502, 0.502, 1.0],
+        "indigo" => [0.294, 0.0, 0.510, 1.0],
+        "violet" => [0.933, 0.510, 0.933, 1.0],
+        "gold" => [1.0, 0.843, 0.0, 1.0],
+        "silver" => [0.753, 0.753, 0.753, 1.0],
+        "maroon" => [0.502, 0.0, 0.0, 1.0],
+        "olive" => [0.502, 0.502, 0.0, 1.0],
+        _ => return None,
+    })
 }
 
 fn json_point(v: Option<&Json>) -> Option<(f32, f32)> {
@@ -515,7 +977,14 @@ fn json_blend_mode(name: &str) -> Option<BlendMode> {
         "overlay" => BlendMode::Overlay,
         "darken" => BlendMode::Darken,
         "lighten" => BlendMode::Lighten,
+        "colorDodge" => BlendMode::ColorDodge,
+        "colorBurn" => BlendMode::ColorBurn,
+        "hardLight" => BlendMode::HardLight,
+        "softLight" => BlendMode::SoftLight,
+        "difference" => BlendMode::Difference,
+        "exclusion" => BlendMode::Exclusion,
         "plus" => BlendMode::Plus,
+        "xor" => BlendMode::Xor,
         _ => return None,
     })
 }
@@ -525,12 +994,7 @@ fn gradient_colors_and_positions(props: &Json) -> Option<(Vec<Color4f>, Option<V
         .get("colors")?
         .as_array()?
         .iter()
-        .map(|c| {
-            if c.as_str() == Some("transparent") {
-                return Color4f::new(0.0, 0.0, 0.0, 0.0);
-            }
-            json_color(c).map(|[r, g, b, a]| Color4f::new(r, g, b, a)).unwrap_or(Color4f::new(0.0, 0.0, 0.0, 1.0))
-        })
+        .map(|c| parse_color(c).map(|[r, g, b, a]| Color4f::new(r, g, b, a)).unwrap_or(Color4f::new(0.0, 0.0, 0.0, 1.0)))
         .collect();
     let positions = props
         .get("positions")

@@ -114,7 +114,9 @@ mod reanimated_test {
             super::host::with_scene(|scene| {
                 let root = scene.root.expect("bundle should have set a scene root");
                 scene.compute_layout(1024.0, 640.0);
-                let badge = scene.children_of(root)[1];
+                // PulseBadge is App's last child (see index.tsx) — robust to
+                // however many siblings render before it.
+                let badge = *scene.children_of(root).last().expect("root should have children");
                 scene.layout_of(badge).2
             })
         };
@@ -166,5 +168,46 @@ mod fills_arbitrary_aspect_ratio_test {
         // near the bottom of the actual window rather than a fixed old size.
         let color = pixmap.get_color((width / 2, height - 20));
         assert_eq!((color.r(), color.g(), color.b()), (10, 13, 20), "root background should reach the true window bottom");
+    }
+}
+
+/// Documents a genuine Hermes engine bug found while wiring up real `@sc/ui`
+/// (spike 7): a `for (let key of ...)` loop whose body defines a closure via
+/// `Object.defineProperty` doesn't get a fresh `key` binding per iteration —
+/// every getter ends up seeing the *last* key. This is exactly the shape of
+/// esbuild's own CJS→ESM interop helper (`__copyProps`), which `js/build.mjs`
+/// patches post-build (swaps the loop for `.forEach`, where `key` is a
+/// function parameter instead of a loop-scoped `let`). If Hermes ever fixes
+/// this, both `createContextType` assertions below would need to flip to
+/// "function" — that's the signal to remove the build.mjs patch too.
+#[cfg(test)]
+mod hermes_for_of_let_closure_bug_test {
+    #[test]
+    fn reproduces_in_isolation() {
+        let rt = super::Runtime::new().expect("failed to create Hermes runtime");
+        let js = r#"
+        var __getOwnPropNames = Object.getOwnPropertyNames;
+        var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+        var __hasOwnProp = Object.prototype.hasOwnProperty;
+        var __defProp = Object.defineProperty;
+        var copyPropsForOf = (to, from, except, desc) => {
+          if (from && typeof from === "object" || typeof from === "function") {
+            for (let key of __getOwnPropNames(from))
+              if (!__hasOwnProp.call(to, key) && key !== except)
+                __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+          }
+          return to;
+        };
+
+        var fakeModule = { firstFn: function () { return "ok"; }, version: "1.2.3" };
+        var wrapped = copyPropsForOf({}, fakeModule);
+        JSON.stringify({ firstFnType: typeof wrapped.firstFn, firstFnValue: String(wrapped.firstFn) });
+        "#;
+        let result = rt.eval(js).expect("eval failed").into_string().expect("result should be a string").to_rust_string().expect("valid utf8");
+        assert_eq!(
+            result,
+            r#"{"firstFnType":"string","firstFnValue":"1.2.3"}"#,
+            "if this ever reads back as a function, the Hermes bug is fixed — go remove the build.mjs __copyProps patch",
+        );
     }
 }

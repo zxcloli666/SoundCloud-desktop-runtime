@@ -141,7 +141,63 @@ Fabric C++:
   (`skia-desktop/gl_surface.rs`), не в Scene/Yoga/reconciler — расследовать
   отдельно (задача в task list), не блокирует остальное.
 
-Дальше — sc-rn TurboModule + живые экраны `@sc/ui` на бандлер-алиасе
-`@shopify/react-native-skia`→`rnskia.tsx` (спайк 7). Windows-путь (RN-Windows +
-Skia-порт) — после/параллельно, через `winbuild` (podman-windows, VS BuildTools
-уже стоит).
+- **Спайк 7a**: настоящий `@sc/ui` (не копия!) рендерится через наш pipeline.
+  `js/build.mjs` резолвит `react-native`/`@shopify/react-native-skia`/
+  `react-native-reanimated` в наши шимы через esbuild `alias` (как
+  `react-native-web` подменяет `react-native`) — `@sc/ui`'s `Atmosphere`/
+  `ThemeProvider` импортированы напрямую из `@sc/ui` в `js/src/index.tsx`,
+  исходники не тронуты. `@sc/ui` добавлен в `js/package.json` (registry-semver
+  `^0.1.0`) + в корневой `pnpm-workspace.yaml` (`Desktop-Runtime/js`) для
+  локальной линковки — та же схема, что у `Desktop/app`/`Mobile/app`.
+  **Шимы расширены НАМНОГО шире текущего usage `@sc/ui`** (юзер: покрыть
+  заранее, не подбирать по одной функции): `react-native.tsx` — View/Text/
+  Image/Pressable/Touchable*/ScrollView/FlatList/SectionList/SafeAreaView/
+  ActivityIndicator/Switch/TextInput/Modal/StatusBar/Alert/Keyboard/AppState/
+  BackHandler/Linking/StyleSheet/Platform/PixelRatio/Dimensions/
+  useWindowDimensions (реактивен на resize через `__scNotifyResize`, зовётся
+  из `rn-linux` при `WindowEvent::Resized`)/bare `Animated`/`Easing`.
+  `rnskia.tsx` — + Path/Text/Image/Paint/Shader/ColorMatrix/BackdropBlur/
+  BackdropFilter/Mask (эффекты деградируют грациозно: монтируются и лежат
+  верно, эффект пока не применяется)/useImage/useFont/императивный `Skia.*`
+  facade. `reanimated.tsx` — + withSpring (аналитический demped-oscillator)/
+  withDecay/withSequence/withRepeat/runOnUI/runOnJS (both = "просто вызови
+  сейчас", один поток)/useAnimatedReaction/useFrameCallback/
+  useAnimatedProps/createAnimatedComponent/interpolate/interpolateColor/
+  cancelAnimation/Extrapolation. **Важно**: react-native-skia позволяет ЛЮБОЙ
+  проп быть Reanimated `SharedValue` (не только `style`, как в `Animated.View`)
+  — `@sc/ui`'s idle-дрейф передаёт `transform={useDerivedValue(...)}` прямо в
+  `<Group>`. `hostConfig.ts` детектит shared-value-like пропы (duck-typing
+  `'value' in v`) и регистрирует узел на пере-сериализацию КАЖДЫЙ
+  `__reanimatedTick`, не только при коммите (`applySkProps`/
+  `__scRefreshAnimatedSkProps`).
+  Rust-сторона (`scene.rs`) тоже расширена широко: `StyleInput` — position/
+  left/right/top/bottom, flexWrap/alignSelf/alignContent/gap/rowGap/
+  columnGap, aspectRatio/display, per-corner border-radius, borderWidth/
+  borderColor, opacity (через save_layer), overflow:hidden (clip),
+  percent-размеры (`Dimension` enum Point|Percent). Цвета — полноценный
+  парсер CSS (`parse_color`): hex #rgb/#rrggbb/#rrggbbaa, rgb()/rgba(),
+  `transparent`, именованные цвета — не только `[r,g,b,a]`-массивы (снимает
+  упрощение спайка 5).
+
+  **⚠️ КРУПНАЯ НАХОДКА — движковый баг Hermes**, не в нашем коде: `for (let
+  key of ...)` цикл, где тело создаёт замыкание через `Object.defineProperty`,
+  НЕ даёт свежий `key`-биндинг на каждой итерации — все геттеры видят
+  ПОСЛЕДНИЙ key. Это ТОЧНАЯ форма esbuild-овского helper'а `__copyProps`
+  (CJS→ESM interop для именованных импортов, `import {createContext, useMemo}
+  from 'react'` — ThemeProvider.tsx первым в проекте использует именно эти
+  два, до сих пор обходились `createElement`/`useState`/`useRef`/`forwardRef`)
+  — ЛЮБОЕ свойство CJS-модуля (react.createContext, useMemo, ...) начинает
+  возвращать ПОСЛЕДНЕЕ enumerable-свойство модуля (`version`, строка "19.2.3")
+  → `'19.2.3' is not a function`. Подтверждено изолированным репродюсом (ловится
+  и вне бандла, тест `hermes_for_of_let_closure_bug_test`) и Node (та же сборка
+  ИСПОЛНЯЕТСЯ ВЕРНО в V8 — баг специфичен для Hermes). ES5-таргет esbuild не
+  подошёл (проект не транспилится целиком до ES5 — const/деструктуризация).
+  **Фикс — постпроцессинг бандла** (`js/build.mjs`, после `esbuild.build()`):
+  regex-патч меняет `for...of`+`let` на `.forEach(function(key) {...})`
+  (параметр функции — Hermes с ним работает верно, в отличие от let-в-цикле).
+  Патч кидает ошибку сборки, если esbuild когда-нибудь поменяет форму
+  helper'а (нужно будет обновить regex).
+
+Дальше — sc-rn TurboModule (живые данные, оставшаяся часть спайка 7). Windows-
+путь (RN-Windows + Skia-порт, спайк 1) — через `winbuild` (podman-windows, VS
+BuildTools уже стоит).

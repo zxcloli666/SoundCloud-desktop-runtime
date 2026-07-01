@@ -1,0 +1,300 @@
+// Compatible subset of the `react-native` package, aliased in at bundle time
+// (see build.mjs) so `@sc/ui` and screens import the real package name and
+// never know they're not running on Android/iOS. Covers the common surface
+// broadly, not just what `@sc/ui` happens to use today — cheaper to stub a
+// component now than to come back mid-feature-work later.
+//
+// Real interactivity (press/scroll/text-input) needs actual pointer/keyboard
+// events routed from winit into the reconciler, which doesn't exist yet —
+// those components render correctly but don't yet respond to input.
+import React from 'react';
+
+type Props = Record<string, unknown> & { children?: React.ReactNode; style?: unknown };
+
+export const View = React.forwardRef<number, Props>((props, ref) =>
+  React.createElement('View', { ...props, ref }),
+);
+
+export const Text = React.forwardRef<number, Props>((props, ref) =>
+  React.createElement('View', { ...props, ref }, props.children as React.ReactNode),
+);
+
+// No asset-decoding pipeline yet (spike 7+ follow-up) — renders as an empty
+// box sized/styled like the real component so layouts don't collapse.
+export const Image = React.forwardRef<number, Props & { source?: unknown }>((props, ref) => {
+  const { source: _source, ...rest } = props;
+  return React.createElement('View', { ...rest, ref });
+});
+
+type PressableProps = Props & {
+  onPress?: () => void;
+  onPressIn?: () => void;
+  onPressOut?: () => void;
+  onLongPress?: () => void;
+};
+
+// Renders correctly today; doesn't yet fire on*Press (no pointer-event
+// plumbing from winit into the reconciler) — tracked alongside real input.
+export const Pressable = React.forwardRef<number, PressableProps>((props, ref) => {
+  const { onPress: _onPress, onPressIn: _onPressIn, onPressOut: _onPressOut, onLongPress: _onLongPress, ...rest } = props;
+  return React.createElement('View', { ...rest, ref });
+});
+
+export const TouchableOpacity = Pressable;
+export const TouchableHighlight = Pressable;
+export const TouchableWithoutFeedback = Pressable;
+
+// Applies `overflow: hidden` like the real component's clipsToBounds default;
+// scroll position/gestures are a later input-plumbing follow-up.
+export const ScrollView = React.forwardRef<number, Props>((props, ref) => {
+  const style = props.style as Record<string, unknown> | undefined;
+  return React.createElement(
+    'View',
+    { ...props, style: { ...style, overflow: 'hidden' }, ref },
+    props.children as React.ReactNode,
+  );
+});
+
+type ListProps<T> = Props & {
+  data?: T[];
+  renderItem?: (info: { item: T; index: number }) => React.ReactNode;
+  keyExtractor?: (item: T, index: number) => string;
+  ListHeaderComponent?: React.ReactNode;
+  ListFooterComponent?: React.ReactNode;
+  ListEmptyComponent?: React.ReactNode;
+};
+
+// No virtualization (desktop screens are small enough that it's not worth
+// the complexity yet) — just maps `data` through `renderItem` inside a View.
+export function FlatList<T>(props: ListProps<T>) {
+  const { data, renderItem, keyExtractor, ListHeaderComponent, ListFooterComponent, ListEmptyComponent, style } = props;
+  const items = data ?? [];
+  return (
+    <View style={style}>
+      {ListHeaderComponent}
+      {items.length === 0
+        ? ListEmptyComponent
+        : items.map((item, index) => (
+            <React.Fragment key={keyExtractor ? keyExtractor(item, index) : index}>
+              {renderItem?.({ item, index })}
+            </React.Fragment>
+          ))}
+      {ListFooterComponent}
+    </View>
+  );
+}
+
+type SectionListProps<T> = Props & {
+  sections?: Array<{ title?: string; data: T[] }>;
+  renderItem?: (info: { item: T; index: number }) => React.ReactNode;
+  renderSectionHeader?: (info: { section: { title?: string; data: T[] } }) => React.ReactNode;
+  keyExtractor?: (item: T, index: number) => string;
+};
+
+export function SectionList<T>(props: SectionListProps<T>) {
+  const { sections, renderItem, renderSectionHeader, keyExtractor, style } = props;
+  return (
+    <View style={style}>
+      {(sections ?? []).map((section, sectionIndex) => (
+        <React.Fragment key={section.title ?? sectionIndex}>
+          {renderSectionHeader?.({ section })}
+          {section.data.map((item, index) => (
+            <React.Fragment key={keyExtractor ? keyExtractor(item, index) : `${sectionIndex}-${index}`}>
+              {renderItem?.({ item, index })}
+            </React.Fragment>
+          ))}
+        </React.Fragment>
+      ))}
+    </View>
+  );
+}
+
+export function SafeAreaView(props: Props) {
+  // Single desktop window, no notches/insets to account for.
+  return <View {...props} />;
+}
+
+export function KeyboardAvoidingView(props: Props) {
+  return <View {...props} />;
+}
+
+// Renders as a static box (no spinner animation yet — would want an
+// Animated/reanimated-driven rotation once useClock ticks for real, spike 6
+// follow-up) sized like the real component.
+export function ActivityIndicator({ size = 20, color = [1, 1, 1, 1] }: { size?: number | 'small' | 'large'; color?: unknown }) {
+  const px = size === 'small' ? 20 : size === 'large' ? 36 : size;
+  return <View style={{ width: px, height: px, borderRadius: px / 2, backgroundColor: color }} />;
+}
+
+// Renders as a plain box — no interactive thumb/track animation without
+// input plumbing.
+export function Switch({ value, trackColor }: { value?: boolean; trackColor?: unknown }) {
+  return (
+    <View
+      style={{
+        width: 40,
+        height: 24,
+        borderRadius: 12,
+        backgroundColor: value ? (trackColor ?? [0.4, 0.9, 0.6, 1.0]) : [0.3, 0.3, 0.3, 1.0],
+      }}
+    />
+  );
+}
+
+// Renders a box the same shape as a text field; not focusable/editable yet
+// (needs keyboard-event plumbing from winit).
+export function TextInput(props: Props & { value?: string; placeholder?: string }) {
+  const { value, placeholder, style } = props;
+  return (
+    <View style={{ height: 40, padding: 8, borderRadius: 6, borderWidth: 1, borderColor: [0.4, 0.4, 0.4, 1.0], ...(style as object) }}>
+      <Text>{value || placeholder || ''}</Text>
+    </View>
+  );
+}
+
+// No overlay/z-order compositor yet — renders in place rather than above
+// everything else. Fine for now since nothing uses Modal yet; revisit
+// alongside a real z-index/portal system.
+export function Modal({ visible = true, children }: Props & { visible?: boolean }) {
+  return visible ? <View style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0 }}>{children}</View> : null;
+}
+
+export function StatusBar(_props: Record<string, unknown>) {
+  return null;
+}
+StatusBar.setBarStyle = () => {};
+StatusBar.setBackgroundColor = () => {};
+StatusBar.setHidden = () => {};
+
+export const Alert = {
+  alert: (title: string, message?: string) => {
+    console.warn(`[Alert] ${title}${message ? `: ${message}` : ''}`);
+  },
+};
+
+export const Keyboard = {
+  dismiss: () => {},
+  addListener: () => ({ remove: () => {} }),
+};
+
+export const AppState = {
+  currentState: 'active' as const,
+  addEventListener: () => ({ remove: () => {} }),
+};
+
+export const BackHandler = {
+  addEventListener: () => ({ remove: () => {} }),
+  removeEventListener: () => {},
+  exitApp: () => {},
+};
+
+export const Linking = {
+  openURL: async (_url: string) => {},
+  canOpenURL: async (_url: string) => true,
+  addEventListener: () => ({ remove: () => {} }),
+};
+
+export const StyleSheet = {
+  create<T extends Record<string, unknown>>(styles: T): T {
+    return styles;
+  },
+  flatten<T>(style: T | T[]): T {
+    return Array.isArray(style) ? Object.assign({}, ...style) : style;
+  },
+  compose<T>(a: T, b: T): T[] {
+    return [a, b];
+  },
+  hairlineWidth: 1,
+  absoluteFillObject: { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0 },
+  get absoluteFill() {
+    return this.absoluteFillObject;
+  },
+};
+
+export const Platform = {
+  OS: 'linux' as const,
+  select<T>(specifics: { linux?: T; default?: T; native?: T }): T | undefined {
+    return specifics.linux ?? specifics.default;
+  },
+  Version: 1,
+};
+
+export const PixelRatio = {
+  get: () => 1,
+  getFontScale: () => 1,
+  getPixelSizeForLayoutSize: (n: number) => Math.round(n),
+  roundToNearestPixel: (n: number) => Math.round(n),
+};
+
+type Size = { width: number; height: number };
+let windowSize: Size = { width: 0, height: 0 };
+const resizeListeners = new Set<(size: Size) => void>();
+
+// Called from rn-linux on every `WindowEvent::Resized` — the one place
+// outside React state that needs to reach into a live component tree, same
+// pattern as reanimated's `__reanimatedTick`.
+(globalThis as Record<string, unknown>).__scNotifyResize = function scNotifyResize(width: number, height: number): void {
+  windowSize = { width, height };
+  for (const listener of resizeListeners) listener(windowSize);
+};
+
+export function useWindowDimensions(): Size {
+  const [size, setSize] = React.useState(windowSize);
+  React.useEffect(() => {
+    resizeListeners.add(setSize);
+    return () => {
+      resizeListeners.delete(setSize);
+    };
+  }, []);
+  return size;
+}
+
+export const Dimensions = {
+  get: (_what: 'window' | 'screen'): Size => windowSize,
+  addEventListener: () => ({ remove: () => {} }),
+};
+
+// Bare (non-Reanimated) `Animated` — `@sc/ui` uses reanimated instead, this
+// only exists so an import of the real RN legacy API doesn't crash. Values
+// are static, `.start(cb)` resolves immediately rather than animating.
+class AnimatedValue {
+  constructor(private raw: number) {}
+  setValue(v: number) {
+    this.raw = v;
+  }
+  interpolate(_config: unknown) {
+    return this;
+  }
+  __getValue() {
+    return this.raw;
+  }
+}
+
+export const Animated = {
+  Value: AnimatedValue,
+  View,
+  Text,
+  timing: (value: AnimatedValue, config: { toValue: number }) => ({
+    start: (cb?: (result: { finished: boolean }) => void) => {
+      value.setValue(config.toValue);
+      cb?.({ finished: true });
+    },
+  }),
+  spring: (value: AnimatedValue, config: { toValue: number }) => ({
+    start: (cb?: (result: { finished: boolean }) => void) => {
+      value.setValue(config.toValue);
+      cb?.({ finished: true });
+    },
+  }),
+};
+
+export const Easing = {
+  linear: (t: number) => t,
+  ease: (t: number) => t * t * (3 - 2 * t),
+  quad: (t: number) => t * t,
+  cubic: (t: number) => t * t * t,
+  bezier: () => (t: number) => t,
+  in: (fn: (t: number) => number) => fn,
+  out: (fn: (t: number) => number) => (t: number) => 1 - fn(1 - t),
+  inOut: (fn: (t: number) => number) => (t: number) => (t < 0.5 ? fn(2 * t) / 2 : 1 - fn(2 * (1 - t)) / 2),
+};

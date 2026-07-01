@@ -7,6 +7,7 @@
     "build": "node build.mjs"
   },
   "dependencies": {
+    "@sc/ui": "^0.1.0",
     "react": "19.2.3",
     "react-reconciler": "^0.32.0"
   },

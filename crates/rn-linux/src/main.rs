@@ -39,6 +39,14 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
                 gpu.resize(size.width, size.height);
+                // useWindowDimensions (js/src/react-native.tsx) needs to know
+                // without the app having to poll every frame.
+                self.hermes
+                    .eval(&format!(
+                        "if (typeof __scNotifyResize === 'function') __scNotifyResize({}, {});",
+                        size.width, size.height
+                    ))
+                    .expect("resize notify failed");
                 gpu.window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
@@ -90,6 +98,10 @@ fn main() {
         .with_inner_size(winit::dpi::LogicalSize::new(1024.0, 640.0));
     let gpu = GlWindowSurface::new(&event_loop, attrs);
     gpu.window.request_redraw();
+    let (initial_width, initial_height): (u32, u32) = gpu.window.inner_size().into();
+    hermes
+        .eval(&format!("if (typeof __scNotifyResize === 'function') __scNotifyResize({initial_width}, {initial_height});"))
+        .expect("resize notify failed");
 
     let snapshot_path = std::env::var_os("RN_LINUX_SNAPSHOT").map(PathBuf::from);
     let snapshot_delay_ms = std::env::var("RN_LINUX_SNAPSHOT_DELAY_MS")

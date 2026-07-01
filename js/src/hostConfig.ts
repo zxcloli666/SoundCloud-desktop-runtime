@@ -19,10 +19,19 @@ const SK_DRAW_TYPES = new Set([
   'Circle',
   'Rect',
   'RoundedRect',
+  'Path',
+  'Text',
+  'Image',
+  'Paint',
   'Group',
   'Blur',
   'RadialGradient',
   'LinearGradient',
+  'Shader',
+  'ColorMatrix',
+  'BackdropBlur',
+  'BackdropFilter',
+  'Mask',
   'Box',
   'BoxShadow',
 ]);
@@ -46,10 +55,52 @@ function applyStyle(id: Instance, props: ViewProps): void {
   __scSetStyle(id, JSON.stringify(props.style ?? {}));
 }
 
-function applySkProps(id: Instance, props: Record<string, unknown>): void {
-  const { children: _children, ...rest } = props;
-  __scSetSkProps(id, JSON.stringify(rest));
+// react-native-skia lets *any* prop be a Reanimated `SharedValue` instead of a
+// plain value (real react-native-skia reads `.value` at draw time via its own
+// worklet runtime) — `@sc/ui`'s idle drift (`<Group transform={useDerivedValue(...)}>`)
+// depends on this. Duck-typed rather than an `instanceof` check since
+// `useDerivedValue`'s return value is a plain getter object, not a class.
+function isSharedValueLike(v: unknown): v is { value: unknown } {
+  return typeof v === 'object' && v !== null && !Array.isArray(v) && 'value' in v;
 }
+
+function resolveSkProps(rawProps: Record<string, unknown>): { resolved: Record<string, unknown>; hasSharedValue: boolean } {
+  const resolved: Record<string, unknown> = {};
+  let hasSharedValue = false;
+  for (const [key, value] of Object.entries(rawProps)) {
+    if (isSharedValueLike(value)) {
+      hasSharedValue = true;
+      resolved[key] = value.value;
+    } else {
+      resolved[key] = value;
+    }
+  }
+  return { resolved, hasSharedValue };
+}
+
+// nodeId -> raw props (including any live SharedValues) for nodes that need
+// re-resolving every reanimated tick, not just at React commit time.
+const skAnimatedNodes = new Map<Instance, Record<string, unknown>>();
+
+function applySkProps(id: Instance, props: Record<string, unknown>): void {
+  const { children: _children, ...rawProps } = props;
+  const { resolved, hasSharedValue } = resolveSkProps(rawProps);
+  __scSetSkProps(id, JSON.stringify(resolved));
+  if (hasSharedValue) {
+    skAnimatedNodes.set(id, rawProps);
+  } else {
+    skAnimatedNodes.delete(id);
+  }
+}
+
+// Called from reanimated.tsx's `__reanimatedTick` — same per-frame refresh
+// pattern as `Animated.View`'s style bindings, just for Skia node props.
+(globalThis as Record<string, unknown>).__scRefreshAnimatedSkProps = function scRefreshAnimatedSkProps(): void {
+  for (const [id, rawProps] of skAnimatedNodes) {
+    const { resolved } = resolveSkProps(rawProps);
+    __scSetSkProps(id, JSON.stringify(resolved));
+  }
+};
 
 // React 18+ added priority tracking to the host config (not in react-reconciler's
 // README, which predates it) — same pattern react-dom/react-native use: a module-level
@@ -177,6 +228,7 @@ export const hostConfig = {
 
   removeChild(parent: Instance, child: Instance): void {
     __scRemoveChild(parent, child);
+    skAnimatedNodes.delete(child);
   },
 
   removeChildFromContainer(container: Container, child: Instance): void {

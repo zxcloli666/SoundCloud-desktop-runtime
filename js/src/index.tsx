@@ -1,14 +1,14 @@
-// Spike 5: the same glow-orbs + glass-panel look spike 2 hand-drew in Rust,
-// this time composed declaratively from react-reconciler + our
-// react-native-skia-compatible primitives (rnskia.tsx) — proves Circle/
-// RadialGradient/Blur/Group/Box/BoxShadow/LinearGradient/RoundedRect, the
-// exact subset `@sc/ui`'s Atmosphere/Waveform/GlassSurface use.
+// Spike 7a: the real `@sc/ui` package, unmodified, importing 'react-native' /
+// '@shopify/react-native-skia' / 'react-native-reanimated' — resolved at
+// bundle time (build.mjs `alias`) to our shims instead of the real native
+// modules. `Atmosphere` below is @sc/ui's own component, not a local copy.
+import { Atmosphere, ThemeProvider } from '@sc/ui';
 import React from 'react';
 import Reconciler from 'react-reconciler';
 import { LegacyRoot } from 'react-reconciler/constants';
 
 import { hostConfig } from './hostConfig';
-import { View } from './host-components';
+import { View } from './react-native';
 import { Animated, useAnimatedStyle, useSharedValue, withTiming } from './reanimated';
 import { Blur, Box, BoxShadow, Canvas, Circle, Group, LinearGradient, RadialGradient, RoundedRect, rect, rrect, vec } from './rnskia';
 
@@ -89,10 +89,15 @@ function PulseBadge() {
 
 function App() {
   return (
-    <View style={{ backgroundColor: [0.04, 0.05, 0.08, 1.0] }}>
-      <Scene />
-      <PulseBadge />
-    </View>
+    <ThemeProvider accent="#5a8cff" perfMode="beauty">
+      <View style={{ backgroundColor: [0.04, 0.05, 0.08, 1.0] }}>
+        {/* Real @sc/ui component, unmodified — proves the bundler-alias
+            swap (build.mjs) works end to end, not just our own test scene. */}
+        <Atmosphere />
+        <Scene />
+        <PulseBadge />
+      </View>
+    </ThemeProvider>
   );
 }
 
