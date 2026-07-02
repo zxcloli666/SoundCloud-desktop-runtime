@@ -1,9 +1,15 @@
-# Our own self-hosted sparse Cargo registry (see docs/registry.md) — hosts
-# `rusty_hermes` (published from our fork, since upstream's crates.io
-# release is yanked and can't take a version-less git dependency anyway)
-# and this repo's own crates once tagged. GitHub Pages, deployed by
-# .github/workflows/publish.yml — no external registry account needed to
-# build this repo, just this one stanza (which ships committed, so nobody
-# consuming this repo needs to add it themselves).
+# Two self-hosted sparse registries (see docs/registry.md), split by who
+# owns the artifacts — each repo publishes its own, never commingled:
+#
+# - `desktop-runtime`: this repo's own crates (skia-desktop/js-host/
+#   rn-linux), deployed by .github/workflows/publish.yml.
+# - `rusty-hermes-fork`: the Hermes binding this repo depends on, hosted
+#   from ITS OWN repo (zxcloli666/rusty_hermes) — upstream's crates.io
+#   release is yanked and can't take a version-less git dependency
+#   anyway, but that's rusty_hermes's own distribution concern, not
+#   something Desktop-Runtime's own release history should carry.
+#
+# Both ship committed, so nobody consuming this repo needs to add them.
 [registries]
 desktop-runtime = { index = "sparse+https://zxcloli666.github.io/SoundCloud-desktop-runtime/registry/" }
+rusty-hermes-fork = { index = "sparse+https://zxcloli666.github.io/rusty_hermes/registry/" }
