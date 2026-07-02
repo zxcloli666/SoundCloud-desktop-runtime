@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/skia-desktop", "crates/rn-linux", "crates/js-host"]
+members = ["crates/skia-desktop", "crates/rn-linux", "crates/rn-windows", "crates/js-host"]
 # `examples/` and `e2e/` are each their OWN nested Cargo workspace (own
 # `[workspace]` table, own Cargo.lock) — this root workspace's `members` list
 # is already explicit (never a glob), so neither could be swept in by

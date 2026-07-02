@@ -1,0 +1,10 @@
+[package]
+name = "rn-windows"
+version = "0.1.0"
+description = "React Native runtime engine for Windows desktop — no Fabric, no webview"
+repository = "https://github.com/zxcloli666/SoundCloud-desktop-runtime"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rn-linux = { version = "0.1.0", path = "../rn-linux", registry = "desktop-runtime" }
