@@ -1,0 +1,122 @@
+name: Compatibility check
+
+# Weekly: is this engine still structurally compatible with the latest
+# react-native / @shopify/react-native-skia / react-native-reanimated /
+# react-reconciler? See compat/README.md for what "compatible" means here
+# (structural type check, not a runtime swap — we never execute the real
+# packages).
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Check for new upstream versions
+        id: versions
+        working-directory: compat
+        run: pnpm install --no-frozen-lockfile && node check-latest-versions.mjs
+
+      - name: Bump compat/'s pinned versions (not committed yet)
+        if: steps.versions.outputs.changed == 'true'
+        working-directory: compat
+        run: |
+          node -e "
+            const fs = require('node:fs');
+            const latest = JSON.parse(process.env.LATEST_JSON);
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            for (const [name, version] of Object.entries(latest)) {
+              if (pkg.devDependencies[name]) pkg.devDependencies[name] = version;
+            }
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+          pnpm install --no-frozen-lockfile
+        env:
+          LATEST_JSON: ${{ steps.versions.outputs.latest_json }}
+
+      - name: Structural compatibility check
+        if: steps.versions.outputs.changed == 'true'
+        working-directory: compat
+        run: pnpm check
+
+      - name: Install system build dependencies (Yoga/Skia/winit)
+        if: steps.versions.outputs.changed == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config \
+            libx11-dev libxkbcommon-dev libwayland-dev libxrandr-dev libxi-dev \
+            libgl1-mesa-dev libegl1-mesa-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.versions.outputs.changed == 'true'
+
+      - name: Full zero-dependency engine test suite
+        if: steps.versions.outputs.changed == 'true'
+        run: cargo test --workspace
+
+      - name: Engine JS build + typecheck
+        if: steps.versions.outputs.changed == 'true'
+        working-directory: js
+        run: pnpm install --no-frozen-lockfile && pnpm build && pnpm typecheck
+
+      - name: Apply new versions + regenerate compatibility table
+        if: steps.versions.outputs.changed == 'true'
+        working-directory: compat
+        run: node apply-versions.mjs "$LATEST_JSON"
+        env:
+          LATEST_JSON: ${{ steps.versions.outputs.latest_json }}
+
+      - name: Open PR with the version bump
+        if: steps.versions.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "chore(compat): bump verified upstream versions"
+          title: "chore(compat): bump verified upstream versions"
+          body: |
+            Automated weekly compatibility check — these upstream versions
+            changed and the engine still checks out clean against them
+            (structural compat check in `compat/` + the full zero-dependency
+            test suite):
+
+            ${{ steps.versions.outputs.latest_json }}
+
+            Review before merging — this only proves structural/type
+            compatibility and that the existing test suite still passes, not
+            full behavioral parity against a real device. See
+            `compat/README.md`.
+          branch: compat-check/version-bump
+          labels: compat-check
+
+  report-failure:
+    needs: check
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: 'Compatibility check failed against a new upstream version',
+              body: `The weekly compat-check run failed — see the [workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}) for details.\n\n\`compat/VERSIONS.json\` was left at its last known-good versions (not updated). This means either the structural type check (\`compat/\`) or the full engine test suite broke against a new upstream release — the shims likely need updating.`,
+              labels: ['compat-check', 'needs-triage'],
+            });

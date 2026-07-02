@@ -351,8 +351,7 @@ export const hostConfig = {
   },
 
   insertBefore(parent: Instance, child: Instance, _beforeChild: Instance): void {
-    // Our Scene only supports append, no explicit reordering yet — fine for
-    // this spike's static tree; revisit once dynamic lists show up.
+    // Scene only supports append, no explicit reordering yet.
     __scAppendChild(parent, child);
   },
 

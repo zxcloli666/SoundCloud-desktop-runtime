@@ -1,6 +1,5 @@
-//! Real network fetch + real Skia decode for `<Image>` (task #20) — same
-//! "hit a real external endpoint, poll like rn-linux's render loop does"
-//! approach as `live_data_test` (no test-only shortcut, no mock server).
+//! Real network fetch + real Skia decode for `<Image>` — hits a real
+//! external endpoint and polls like the render loop does, no mock server.
 
 use std::collections::HashMap;
 use std::thread::sleep;

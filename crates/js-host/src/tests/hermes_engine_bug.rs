@@ -1,6 +1,7 @@
-//! Documents a genuine Hermes engine bug found while wiring up real `@sc/ui`
-//! (spike 7): a `for (let key of ...)` loop whose body defines a closure via
-//! `Object.defineProperty` doesn't get a fresh `key` binding per iteration —
+//! Documents a genuine Hermes engine bug (see `docs/pitfalls/
+//! hermes-engine-bugs.md`): a `for (let key of ...)` loop whose body
+//! defines a closure via `Object.defineProperty` doesn't get a fresh
+//! `key` binding per iteration —
 //! every getter ends up seeing the *last* key. This is exactly the shape of
 //! esbuild's own CJS→ESM interop helper (`__copyProps`), which `js/build.mjs`
 //! patches post-build (swaps the loop for `.forEach`, where `key` is a

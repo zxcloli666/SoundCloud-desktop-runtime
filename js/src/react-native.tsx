@@ -51,8 +51,8 @@ export const Text = React.forwardRef<number, Props>((props, ref) =>
   React.createElement('View', { ...props, ref }, props.children as React.ReactNode),
 );
 
-// No asset-decoding pipeline yet (spike 7+ follow-up) — renders as an empty
-// box sized/styled like the real component so layouts don't collapse.
+// Numeric require()'d assets have no decoding pipeline — renders as an
+// empty box sized/styled like the real component so layouts don't collapse.
 type ImageSource = { uri?: string | null } | number | null | undefined;
 type ImageResizeMode = 'cover' | 'contain' | 'stretch' | 'center' | 'repeat';
 
@@ -205,9 +205,7 @@ export function KeyboardAvoidingView(props: Props) {
   return <View {...props} />;
 }
 
-// Renders as a static box (no spinner animation yet — would want an
-// Animated/reanimated-driven rotation once useClock ticks for real, spike 6
-// follow-up) sized like the real component.
+// Renders as a static box — no spinner rotation. Not used by @sc/ui today.
 export function ActivityIndicator({ size = 20, color = [1, 1, 1, 1] }: { size?: number | 'small' | 'large'; color?: unknown }) {
   const px = size === 'small' ? 20 : size === 'large' ? 36 : size;
   return <View style={{ width: px, height: px, borderRadius: px / 2, backgroundColor: color }} />;

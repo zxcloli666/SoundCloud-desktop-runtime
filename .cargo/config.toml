@@ -1,0 +1,9 @@
+# Our own self-hosted sparse Cargo registry (see docs/registry.md) — hosts
+# `rusty_hermes` (published from our fork, since upstream's crates.io
+# release is yanked and can't take a version-less git dependency anyway)
+# and this repo's own crates once tagged. GitHub Pages, deployed by
+# .github/workflows/publish.yml — no external registry account needed to
+# build this repo, just this one stanza (which ships committed, so nobody
+# consuming this repo needs to add it themselves).
+[registries]
+desktop-runtime = { index = "sparse+https://zxcloli666.github.io/SoundCloud-desktop-runtime/registry/" }

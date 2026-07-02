@@ -7,7 +7,9 @@
     "check:real": "tsc -p tsconfig.real.json",
     "check:shims": "tsc -p tsconfig.shims.json",
     "check": "pnpm check:real && pnpm check:shims",
-    "generate-table": "node generate-table.mjs"
+    "generate-table": "node generate-table.mjs",
+    "check-latest-versions": "node check-latest-versions.mjs",
+    "apply-versions": "node apply-versions.mjs"
   },
   "devDependencies": {
     "@shopify/react-native-skia": "2.6.9",

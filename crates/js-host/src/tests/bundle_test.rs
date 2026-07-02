@@ -9,7 +9,7 @@
 //! intentional duplication, not redundancy: these prove the generic
 //! mechanism works at all (provable with zero `Core` on disk), that one
 //! proves the *real, unmodified* `@sc/ui` package still mounts/hit-tests/
-//! scrolls correctly on this runtime (Desktop-Runtime/CLAUDE.md, "Спайк 8").
+//! scrolls correctly on this runtime (see `docs/pitfalls/`).
 //!
 //! `rt.eval(&bundle)` below runs our own esbuild-produced `dist/
 //! playground.js` inside Hermes — Hermes' `eval` is this embedded JS
@@ -76,8 +76,8 @@ fn real_pressable_components_register_with_scene_hit_test() {
     assert!(found_a_hit, "expected at least one registered pressable node somewhere in the playground tree (both PressableTiles set onPress)");
 }
 
-/// Guards a real bug found manually verifying scroll (Desktop-Runtime/
-/// CLAUDE.md, spike 8 item 8): a horizontal `ScrollView`'s content wrapper
+/// Guards a real bug (see `docs/pitfalls/yoga-layout-gotchas.md`): a
+/// horizontal `ScrollView`'s content wrapper
 /// is a column-direction child of the (also column-direction) outer
 /// clipping container, so Yoga's default `alignItems: stretch` clamped its
 /// width to match the container's — exactly the one dimension a

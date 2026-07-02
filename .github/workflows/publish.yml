@@ -1,0 +1,158 @@
+name: Publish
+
+# Triggered by pushing a `v*` tag. Publishes:
+#  - js/ to GitHub Packages npm (@zxcloli666/desktop-runtime-js)
+#  - skia-desktop, js-host, rn-linux (plus rusty_hermes/libhermes-sys/
+#    rusty_hermes_macros, our fork of a Hermes binding this repo depends
+#    on — see docs/registry.md) to our own self-hosted sparse Cargo
+#    registry, served from this repo's GitHub Pages.
+# See docs/registry.md for the full mechanics and why crates.io/npm
+# proper aren't used.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+  packages: write
+
+jobs:
+  publish-npm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://npm.pkg.github.com
+
+      - working-directory: js
+        run: pnpm install --no-frozen-lockfile && pnpm build
+
+      - working-directory: js
+        run: pnpm publish --no-git-checks --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-crates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: desktop-runtime
+
+      - uses: actions/checkout@v4
+        with:
+          repository: zxcloli666/rusty_hermes
+          ref: desktop-runtime-registry-publish
+          submodules: recursive
+          path: rusty_hermes
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Prepare registry working dirs
+        run: |
+          mkdir -p registry-index crate-output
+          cp desktop-runtime/ops/cargo-registry/config.json registry-index/config.json
+
+      - name: Start ephemeral local registry server
+        # Earlier-published crates in this same run (e.g. rusty_hermes)
+        # need to already resolve via HTTP before later ones (skia-
+        # desktop/js-host) can be packaged — waiting on real GitHub Pages
+        # deploy propagation mid-job would be slow and flaky, so every
+        # packaging step in this job resolves against this ephemeral
+        # server instead. The real, public deploy happens once, at the
+        # end, from the final state of `registry-index/`.
+        run: |
+          node desktop-runtime/ops/cargo-registry/serve-local.mjs registry-index 8931 > /tmp/registry-server.log 2>&1 &
+          for _ in $(seq 1 20); do grep -q READY /tmp/registry-server.log && break; sleep 0.5; done
+          grep -q READY /tmp/registry-server.log
+
+      - name: Publish rusty_hermes family (libhermes-sys, macros, root)
+        env:
+          CARGO_REGISTRIES_DESKTOP_RUNTIME_INDEX: sparse+http://127.0.0.1:8931/
+        run: |
+          node desktop-runtime/ops/cargo-registry/publish-crate.mjs rusty_hermes/libhermes-sys registry-index crate-output
+          node desktop-runtime/ops/cargo-registry/publish-crate.mjs rusty_hermes/rusty_hermes_macros registry-index crate-output
+          node desktop-runtime/ops/cargo-registry/publish-crate.mjs rusty_hermes registry-index crate-output
+
+      - name: Publish this repo's own crates
+        env:
+          CARGO_REGISTRIES_DESKTOP_RUNTIME_INDEX: sparse+http://127.0.0.1:8931/
+        run: |
+          node desktop-runtime/ops/cargo-registry/publish-crate.mjs desktop-runtime/crates/skia-desktop registry-index crate-output
+          node desktop-runtime/ops/cargo-registry/publish-crate.mjs desktop-runtime/crates/js-host registry-index crate-output
+          node desktop-runtime/ops/cargo-registry/publish-crate.mjs desktop-runtime/crates/rn-linux registry-index crate-output
+
+      - name: Upload .crate tarballs as release assets
+        working-directory: desktop-runtime
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for crate_file in ../crate-output/*.crate; do
+            name_version=$(basename "$crate_file" .crate)
+            tag="${name_version%-*}-v${name_version##*-}"
+            if gh release view "$tag" >/dev/null 2>&1; then
+              echo "release $tag already exists, skipping"
+              continue
+            fi
+            gh release create "$tag" "$crate_file" \
+              --title "$name_version (registry artifact)" \
+              --notes "Registry artifact for the self-hosted Desktop-Runtime sparse Cargo registry — see docs/registry.md. Not a Desktop-Runtime release on its own."
+          done
+
+      - name: Deploy the registry index to GitHub Pages
+        run: mkdir -p _site/registry && cp -r registry-index/. _site/registry/
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - uses: actions/deploy-pages@v4
+
+  release-notes:
+    needs: [publish-npm, publish-crates]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build release notes with RN/Skia/Reanimated coverage
+        working-directory: compat
+        run: |
+          {
+            echo "## Compatibility"
+            echo
+            node generate-table.mjs
+          } > /tmp/release-notes.md
+
+      - name: Update the tag's GitHub Release with the compatibility section
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          if [ "$tag" = "$GITHUB_REF" ]; then
+            echo "not a tag push (manual dispatch) — skipping release-notes update"
+            exit 0
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --notes-file /tmp/release-notes.md
+          else
+            gh release create "$tag" --title "$tag" --notes-file /tmp/release-notes.md
+          fi

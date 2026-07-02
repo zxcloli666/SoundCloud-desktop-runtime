@@ -1,6 +1,6 @@
 //! The SoundCloud-specific host functions — the plugin half of the engine/
-//! example split (Desktop-Runtime/CLAUDE.md, "Спайк 8"). `js-host` itself
-//! (the engine) knows nothing about `sc-rn`; this crate is the ONLY place in
+//! example split. `js-host` itself (the engine) knows nothing about
+//! `sc-rn`; this crate is the ONLY place in
 //! the whole repo tree where `sc-rn` is reachable, and it plugs its ops in
 //! from the outside, the same way any third-party consumer of the engine
 //! would add their own: register more `js_host::hermes_op` functions on a

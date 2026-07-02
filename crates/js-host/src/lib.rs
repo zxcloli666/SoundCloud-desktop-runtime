@@ -37,12 +37,12 @@ fn pump_frames(rt: &Runtime, count: u32) {
     }
 }
 
-// Every test module below is a real Hermes/Yoga/Skia exercise, not a mock —
-// see Desktop-Runtime/CLAUDE.md's "Спайк 8" for why they're split into files
-// under `tests/` instead of one long `lib.rs`. All of them are zero-dependency:
-// `bundle_test`/`reanimated_test`/`fills_arbitrary_aspect_ratio_test` load
-// `js/dist/playground.js` — this crate's own synthetic, zero-@sc/ui demo
-// bundle (js/playground/src/index.tsx), not the real SoundCloud one.
+// Every test module below is a real Hermes/Yoga/Skia exercise, not a mock,
+// split into files under `tests/` instead of one long `lib.rs`. All of
+// them are zero-dependency: `bundle_test`/`reanimated_test`/
+// `fills_arbitrary_aspect_ratio_test` load `js/dist/playground.js` — this
+// crate's own synthetic, zero-@sc/ui demo bundle (js/playground/src/
+// index.tsx), not the real SoundCloud one.
 //
 // The real `@sc/ui`-dependent tests (real sc_rn::auth_status() over the
 // async bridge, real @sc/ui press/scroll contract checks) live in

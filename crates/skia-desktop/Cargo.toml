@@ -1,6 +1,8 @@
 [package]
 name = "skia-desktop"
 version = "0.1.0"
+description = "GPU-backed Skia surface for desktop windows (winit + glutin)"
+repository = "https://github.com/zxcloli666/SoundCloud-desktop-runtime"
 edition.workspace = true
 license.workspace = true
 

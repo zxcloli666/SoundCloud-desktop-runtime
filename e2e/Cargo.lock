@@ -1233,7 +1233,8 @@ checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 [[package]]
 name = "libhermes-sys"
 version = "0.4.0"
-source = "git+https://github.com/zxcloli666/rusty_hermes?branch=windows-cmake-generator-fix#128c69e6da94c7dac8c47e72f563c780b7f62569"
+source = "sparse+http://127.0.0.1:8932/"
+checksum = "04c7a335f924c50331ab8a7a6c114edc2c8814920368152750d67711d03b6914"
 dependencies = [
  "cc",
  "cmake",
@@ -1981,7 +1982,8 @@ checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 [[package]]
 name = "rusty_hermes"
 version = "0.3.0"
-source = "git+https://github.com/zxcloli666/rusty_hermes?branch=windows-cmake-generator-fix#128c69e6da94c7dac8c47e72f563c780b7f62569"
+source = "sparse+http://127.0.0.1:8932/"
+checksum = "4d377c4ba30359c083d0eaca7b557a37f997275f4c5d03beecdc6a83c00344c8"
 dependencies = [
  "libhermes-sys",
  "rusty_hermes_macros",
@@ -1990,7 +1992,8 @@ dependencies = [
 [[package]]
 name = "rusty_hermes_macros"
 version = "0.1.0"
-source = "git+https://github.com/zxcloli666/rusty_hermes?branch=windows-cmake-generator-fix#128c69e6da94c7dac8c47e72f563c780b7f62569"
+source = "sparse+http://127.0.0.1:8932/"
+checksum = "7f7cb6d199f30d0786d47c7644c496994e5f9d671b456598b4951588d24e9f11"
 dependencies = [
  "proc-macro2",
  "quote",

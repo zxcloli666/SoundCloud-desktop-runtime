@@ -2,7 +2,7 @@
 //! that reuses `rn-linux::run` as an ordinary library consumer, plugging in
 //! `sc-desktop-ops`'s host functions and a real `sc-rn` init through
 //! `RunConfig::before_bundle_eval` — the engine itself never mentions
-//! `sc-rn`/`@sc/ui` anywhere. See Desktop-Runtime/CLAUDE.md, "Спайк 8".
+//! `sc-rn`/`@sc/ui` anywhere.
 
 use std::path::PathBuf;
 

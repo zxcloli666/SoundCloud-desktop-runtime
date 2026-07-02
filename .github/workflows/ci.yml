@@ -1,0 +1,60 @@
+name: CI
+
+# Zero-dependency engine only (crates/ + js/) — the whole point of the
+# engine/example split (docs/pitfalls/cross-repo-workspace-split.md) is
+# that this needs nothing but this repo checked out. examples/soundcloud
+# and e2e/ need `Core` as a sibling and aren't run here.
+on:
+  push:
+    branches: [main]
+  pull_request: {}
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system build dependencies (Yoga/Skia/winit)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config \
+            libx11-dev libxkbcommon-dev libwayland-dev libxrandr-dev libxi-dev \
+            libgl1-mesa-dev libegl1-mesa-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - run: cargo test --workspace
+
+  js:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - working-directory: js
+        run: pnpm install --no-frozen-lockfile && pnpm build && pnpm typecheck
+
+  compat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - working-directory: compat
+        run: pnpm install --no-frozen-lockfile && pnpm check

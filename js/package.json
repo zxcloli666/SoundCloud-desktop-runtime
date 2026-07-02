@@ -1,8 +1,10 @@
 {
-  "name": "desktop-runtime-js",
-  "private": true,
+  "name": "@zxcloli666/desktop-runtime-js",
   "version": "0.1.0",
   "type": "module",
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
   "scripts": {
     "build": "node build.mjs",
     "typecheck": "tsc"
