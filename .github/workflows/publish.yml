@@ -40,8 +40,21 @@ jobs:
       - working-directory: js
         run: pnpm install --no-frozen-lockfile && pnpm build
 
-      - working-directory: js
-        run: pnpm publish --no-git-checks --access public
+      # npm versions are immutable — a re-run of this workflow (e.g. to
+      # pick up a fix in the crates side) would otherwise fail here on a
+      # version that already published successfully. Same idempotency
+      # philosophy as publish-crates' own "already indexed — skipping" /
+      # "release already exists — skipping" checks below.
+      - name: Publish (skip if this version is already live)
+        working-directory: js
+        run: |
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          if npm view "$name@$version" version --registry https://npm.pkg.github.com >/dev/null 2>&1; then
+            echo "$name@$version is already published — skipping"
+          else
+            pnpm publish --no-git-checks --access public
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
