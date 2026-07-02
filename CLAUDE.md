@@ -5,18 +5,35 @@
 react-native-skia` не существует. ТЗ: `Core/docs/DESKTOP_RUNTIME_TZ.md`.
 
 ```
-Desktop-Runtime/
+Desktop-Runtime/          ДВИЖОК — корневой Cargo/pnpm workspace, ZERO
+                          SC-специфичных зависимостей (см. Спайк 9)
   crates/skia-desktop/   GPU-Skia surface (skia-safe + winit/glutin), общий
                          для Linux-хоста и будущего Windows-бэкенда
   crates/js-host/        Hermes (rusty_hermes) + сцена-дерево (реальная Yoga)
-                         + host-функции для JS; сюда же лягут JSI-биндинги
-                         react-native-skia/reanimated
-  crates/rn-linux/       бинарь: winit-окно + event loop, склеивает
-                         skia-desktop и js-host
+                         + 15 генерик host-функций для JS
+  crates/rn-linux/       lib.rs (RunConfig/run, переиспользуется как
+                         библиотека) + тонкий main.rs: winit-окно + event
+                         loop, склеивает skia-desktop и js-host
   js/                    react-reconciler host-config + react-native-skia-
-                         совместимые примитивы (rnskia.tsx) + тестовое дерево,
-                         esbuild → dist/bundle.js (`pnpm build`), которое
-                         rn-linux грузит и eval'ит в Hermes
+                         совместимые примитивы (rnskia.tsx) + СВОЙ zero-dep
+                         playground (js/playground/), esbuild →
+                         dist/playground.js (`pnpm build`) — то, что
+                         rn-linux грузит по умолчанию
+
+examples/soundcloud/      как ЭТИМ движком пользуется сам SoundCloud —
+                          ОТДЕЛЬНЫЙ вложенный Cargo/pnpm workspace, требует
+                          Core рядом (сиблинг-репо)
+  crates/sc-desktop-ops/ плагин: 7 sc-rn host-функций (__scInitCore/
+                         __scAuthStatus/...) + dto_json.rs — ЕДИНСТВЕННОЕ
+                         место во всём репо, где реально виден sc-rn
+  crates/sc-desktop-example/  тонкий бинарь: rn-linux::run() + sc-desktop-
+                              ops::install() через RunConfig.before_bundle_eval
+  js/                    настоящий `@sc/ui`-демо (index.tsx+live-data.ts),
+                         @sc/ui — прямая зависимость ТОЛЬКО этого package.json
+
+e2e/                       "global tests" — ОТДЕЛЬНЫЙ Cargo workspace,
+                          требует Core + собранный examples/soundcloud/js;
+                          реальный sc-rn + реальный @sc/ui end-to-end
 ```
 
 ## Архитектура (решено 2026-07-01, не Fabric C++ от Meta)
@@ -360,6 +377,69 @@ Fabric C++:
   (`fetch_lifecycle_real_url_bad_url_and_duplicate_request`), весь polling на
   одном потоке, красть нечему. `cargo test --workspace` зелёный стабильно
   (проверено 4 подряд прогона).
+
+- **Спайк 9**: репо переструктурирован на движок (ZERO SC-зависимостей) +
+  явно отделённый пример (юзер: "для ск примеров отдельная папочка, чисто
+  папка с реализацией — тесты внутри, но зеро-депенс, и отдельно папочка с
+  Глобал тестами"). До этого `js-host`'s Cargo.toml тянул `sc-rn` напрямую
+  (`path = "../../../Core/shared/crates/sc-rn"`), а `js/`'s демо (`index.tsx`)
+  напрямую импортировал `@sc/ui` — оба физически не собрались бы у того, кто
+  клонировал ТОЛЬКО Desktop-Runtime (Core — другой репо, чужой чекаут никогда
+  не гарантирован). Дизайн выбран через судейскую панель (3 агента-предложения
+  + синтез) — итоговая схема:
+  - `crates/`+`js/` (корень) — движок, ZERO awareness о `sc-rn`/`@sc/ui`.
+    `host.rs` теперь регистрирует ТОЛЬКО 15 генерик-опов; 7 sc-rn-звонящих
+    (`__scInitCore`/`__scAuthStatus`/`__scMe`/`__scHomeClusters`/`__scWave`/
+    `__scResolveTracks`/`__scSetSession`) и `dto_json.rs` переехали целиком.
+    `live_data.rs` → `async_bridge.rs` (переименован — он и был generic,
+    просто имя намекало на sc-rn). `js/`'s демо (`index.tsx`+`live-data.ts`)
+    переехал; вместо него — `js/playground/` (свой синтетический zero-dep
+    фикстур: 2 Pressable-тайла, `OverflowCarousel` — деliberate воспроизводит
+    ТУ ЖЕ nesting-форму, что уронила альфа спайка 8 п.8, `PulseBox`).
+  - `examples/soundcloud/` — ОТДЕЛЬНЫЙ вложенный Cargo workspace (свой
+    `[workspace]`-стол, свой Cargo.lock) — Cargo при обходе вверх от
+    `crates/sc-desktop-ops` останавливается на БЛИЖАЙШЕМ `[workspace]`, до
+    корневого не доходит; корневой `Cargo.toml` вдобавок получил
+    `exclude = ["examples", "e2e"]` (defensive, members и так explicit-лист,
+    не глоб). `crates/sc-desktop-ops` — плагин-крейт: те самые 7 host-опов,
+    единственное место во всём репо, где `sc-rn` реально резолвится.
+    `crates/sc-desktop-example` — тонкий бинарь, переиспользует `rn_linux::
+    run()` КАК БИБЛИОТЕКУ (не форк/копия event loop) с `RunConfig::
+    before_bundle_eval` — сеть для регистрации SC-опов + `__scInitCore` эвала
+    ДО чтения бандла. `examples/soundcloud/js/` — настоящий `@sc/ui`-демо,
+    ЕДИНСТВЕННЫЙ `package.json` во всём репо с `@sc/ui` в зависимостях.
+  - **Грабля (реальная, не гипотетическая)**: `pub use rusty_hermes::{Runtime,
+    hermes_op, ...};` ре-экспорт из `js-host` ОДНИХ ИМЁН недостаточен для
+    плагин-крейта — `#[hermes_op]`-макро генерит код с ЖЁСТКО зашитыми
+    неквалифицированными путями `rusty_hermes::Foo` (не macro_rules!,
+    хайджин не работает), которые резолвятся ТОЛЬКО если сам `rusty_hermes`
+    (не отдельные айтемы) виден в скоупе под этим именем. Фикс —
+    `pub use rusty_hermes::{self, ...};` (ре-экспорт МОДУЛЯ целиком) в
+    js-host + `use js_host::rusty_hermes;` в потребителе — даёт ОДНУ
+    закреплённую копию `rusty_hermes` (from-source git-деп, ~7-8 мин сборка)
+    на весь дерево репо, несмотря на отдельные Cargo.lock у каждого
+    вложенного workspace (проверено: `grep -c 'name = "rusty_hermes"'` — 1
+    вхождение в каждом Cargo.lock, ОДНА и та же git-ветка везде).
+  - `e2e/` — top-level, ОТДЕЛЬНЫЙ single-crate workspace (bare `[workspace]`
+    без members = сам себе единственный член), "Глобал тесты" юзера — сюда
+    переехал реальный `live_data_test` (→ `auth_bridge.rs`, реальный
+    `sc_rn::auth_status()`) + постоянные дубликаты двух @sc/ui-контрактных
+    тестов (`real_ui_integration.rs`: hit-test/scroll на настоящем
+    `examples/soundcloud/js/dist/bundle.js`) — намеренное дублирование с
+    движковыми zero-dep версиями (`crates/js-host/src/tests/bundle_test.rs`,
+    теперь на `playground.js`), не избыточность: только настоящий `@sc/ui`
+    ловил все 9 багов спайка 8, это постоянный регресс-гард именно на это.
+  - `crates/js-host/src/lib.rs`'s тестовые `mod`ы разнесены по файлам
+    `tests/*.rs` (`#[path = "tests/x.rs"] mod x;`) — было 800+ строк одним
+    файлом, стало по файлу на модуль (юзер: "чисто папка... тесты внутри").
+  - Проверено на каждом шаге: `cargo tree -p js-host`/`-p rn-linux` без
+    узла `sc-rn`; `cargo build`/`cargo test --workspace` с корня — 20/20,
+    zero awareness; `examples/soundcloud` (`cargo check`/`test`) и `e2e`
+    (`cargo test`) — отдельно, оба зелёные (сборка `rusty_hermes`+`sc-rn` с
+    нуля ~7 мин, ожидаемо); живые GPU-снапшоты — и `cargo run -p rn-linux`
+    (голый playground, ничего кроме Desktop-Runtime на диске), и
+    `cargo run -p sc-desktop-example` (полный старый демо-экран, 1:1 с тем,
+    что было ДО рефактора) — рендерят корректно.
 
 Дальше — Windows (спайк 1). Архитектура полностью байпасит RN-Windows/Fabric
 (своя же Yoga+Skia+Hermes+react-reconciler схема, как на Linux), так что
