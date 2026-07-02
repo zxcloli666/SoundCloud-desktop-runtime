@@ -282,6 +282,85 @@ Fabric C++:
   плейсхолдер-ширину под новую строку) + `__scSetText` host-функция +
   `hostConfig.ts`'s `commitTextUpdate` реально зовёт её вместо throw.
 
+- **Спайк 8**: аудит покрытия шимов против реального usage `@sc/ui` (не
+  только грепа компонентов, как в спайке 7a, а по факту рендера/пропов) нашёл
+  9 реальных дыр — все закрыты по-настоящему (не заглушки) и проверены
+  тестами + живыми GPU-снапшотами `rn-linux`:
+  1. **Array-form `style` никогда не флэттенился** — `hostConfig.ts`'s
+     `applyStyle` сериализовал `style={[a, b]}` как есть, Rust-сторона
+     (`StyleInput`, untagged enum) отвергала массив целиком. Реальный `@sc/ui`
+     почти everywhere передаёт `style` массивом (`[baseStyle, conditionalStyle]`).
+     Фикс — `resolveStyle` (флэттенит массивы + резолвит функции-элементы) до
+     `JSON.stringify`.
+  2. **`createAnimatedComponent` спреил style-массив как объект** — рассыпал
+     `[styleA, styleB]` в мусорные числовые ключи (`{0: styleA, 1: styleB}`),
+     молча роняя все реальные стили `Card`/`Button` (оба оборачивают
+     `Pressable` через `Animated.createAnimatedComponent`). Фикс — пропускать
+     массив как есть, `resolveStyle` разбирает его uniformly.
+  3. **Wildcard-индекс `Record<string, unknown>` в `Props`/`PressableProps`/
+     `TextProps` ломал контекстную типизацию колбэков** (`onLayout={(e) =>
+     ...}` тихо получал `e: any`) — подтверждено изолированным репродюсом вне
+     кодовой базы. Фикс убрал wildcard, дал явные поля — это вскрыло ЕЩЁ 3
+     скрытые дыры (Image `resizeMode`, реальный prop-surface ScrollView,
+     отсутствующий тип события у `Pressable.onPress`), тоже закрытые.
+  4. **View shadow-пропы** (`shadowColor`/`Opacity`/`Radius`/`Offset`) не
+     доходили до Skia — добавлены в `StyleInput`/`LayoutPaint`, рисуются до
+     фона (`draw_layout_node`).
+  5. **`onLayout` никогда не вызывался** — `GlassSurface`/`Waveform` гейтят
+     ВЕСЬ Canvas-рендер на первом `onLayout` (без него монтируются, но рисуют
+     пустоту). Реализовано Rust-owned: `Scene::watch_layout`/
+     `drain_layout_changes`, per-frame дренится `rn-linux`'s
+     `RedrawRequested` (`__scDispatchLayoutChanges`) — тот же паттерн, что
+     `live_data::deliver`/`image_cache::drain_ready` (см. ниже).
+  6. **Текст не измерялся по-настоящему** — `Text` держал эвристическую
+     ширину вместо настоящего Yoga measure-hook, из-за чего `numberOfLines`-
+     эллипсис/truncation были no-op, а per-node `fontSize`/`color` (Text
+     всегда оборачивается `<View style={{fontSize,color}}>`) не читались при
+     отрисовке. Фикс — настоящий Yoga `measure_func` (extern "C" callback,
+     `yoga::Context` хранит `NodeId` на узле), `SceneNode::parent` даёт Text-
+     узлу достать стиль родителя, binary-search truncate-with-ellipsis по
+     реальным метрикам шрифта.
+  7. **Инпут вообще не доходил до React** — `Pressable`'s `onPress`-семейство
+     мочалось шимом впустую. Реализовано: `Scene::hit_test`
+     (reverse-child-order, scroll-offset-aware) + `watch_press`/`unwatch_press`
+     в `hostConfig.ts`, `rn-linux`'s `WindowEvent::MouseInput` диспатчит
+     pressIn/pressOut/press по тому ЖЕ узлу, что был под курсором на press-down
+     (не на release — матчит реальную touch-семантику "drag off всё ещё
+     завершает тот же touch").
+  8. **`ScrollView` не скроллился** — `rn-linux`'s `MouseWheel` теперь
+     хит-тестит скроллящийся контейнер и двигает `Scene::scroll_by`
+     (клэмп на `[0, content - container]`). Попутно найден и исправлен
+     РЕАЛЬНЫЙ баг: горизонтальный контент-wrapper зажимался Yoga-шным
+     дефолтным `alignItems: stretch` до ширины контейнера — скроллить было
+     физически нечего. Фикс — `alignSelf: 'flex-start'` ТОЛЬКО для
+     `horizontal` (вертикальный скролл, наоборот, корректно стретчится по
+     ширине).
+  9. **`<Image>` (не Skia-канвас, а `react-native.tsx`'s — `Avatar`/`Card`/
+     `TrackRow`'s artwork) не грузил и не рисовал реальные картинки** —
+     `js-host/src/image_cache.rs` (новый крейт-модуль): фоновый
+     `tokio::Runtime` + `reqwest` фетчит, `skia_safe::Image::from_encoded`
+     декодирует, per-frame `drain_ready()` отдаёт готовые картинки
+     `rn-linux`'s render loop — тот же fire-and-forget + per-frame-drain
+     паттерн, что и `live_data`/onLayout, никогда не блокирует рендер-поток.
+  Плюс постоянный локальный `pnpm typecheck` (новый `js/tsconfig.json`,
+  path-mapped на все 4 шима + `@sc/ui`) — держит шимы типово честными против
+  реального `@sc/ui`, не подключён в CI (осознанно, см. "Финальный шаг").
+
+  **Найден и исправлен баг класса "process-global канал, дренящийся
+  полностью на каждый вызов" — дважды**: сначала `live_data_test`'s
+  callback_id коллизия с id, которые бандл генерит сам (фикс —
+  розличимые id), затем `image_cache_test`'s три параллельных `#[test]`
+  (cargo гоняет каждый на своём потоке) поллили ОБЩИЙ mpsc-канал через
+  `drain_ready()` — один поток мог вычерпать и молча выкинуть готовый
+  результат ДРУГОГО ещё выполняющегося теста. На этот раз розличимые id не
+  спасали (не коллизия, а то, что недостающие результаты просто
+  выбрасывались) — а `skia_safe::Image` не `Send`/`Sync` (голый `NonNull` без
+  unsafe impl в `skia-safe`), так что и шаренный кросс-поточный стэш для
+  готовых картинок не вариант. Фикс — три сценария слиты в один `#[test]`
+  (`fetch_lifecycle_real_url_bad_url_and_duplicate_request`), весь polling на
+  одном потоке, красть нечему. `cargo test --workspace` зелёный стабильно
+  (проверено 4 подряд прогона).
+
 Дальше — Windows (спайк 1). Архитектура полностью байпасит RN-Windows/Fabric
 (своя же Yoga+Skia+Hermes+react-reconciler схема, как на Linux), так что
 единственный платформенный блокер — сборка `rusty_hermes`/`libhermes-sys` под
