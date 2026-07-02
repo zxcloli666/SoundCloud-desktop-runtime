@@ -15,9 +15,9 @@ fn root_background_covers_a_tall_narrow_window() {
     super::host::install(&rt).expect("failed to install host functions");
     let bundle = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../js/dist/bundle.js"
+        "/../../js/dist/playground.js"
     ))
-    .unwrap_or_else(|e| panic!("read js/dist/bundle.js: {e} (run `pnpm build` in js/)"));
+    .unwrap_or_else(|e| panic!("read js/dist/playground.js: {e} (run `pnpm build` in js/)"));
     rt.eval(&bundle).expect("bundle JS failed");
     // ConcurrentRoot's initial commit needs a frame pump too — see
     // `pump_frames` and `bundle_test`.
@@ -33,11 +33,12 @@ fn root_background_covers_a_tall_narrow_window() {
 
     let image = surface.image_snapshot();
     let pixmap = image.peek_pixels().expect("raster surface should be readable");
-    // Root's backgroundColor is [0.04, 0.05, 0.08, 1.0]. Sample a few
-    // pixels in from the left edge, near the bottom of the actual window
-    // rather than a fixed old size — every demo child (Scene/LiveDataProbe/
-    // CoreUiProbe/PulseBadge) has its own margin, so this stays clear of
-    // their tinted backgrounds regardless of how tall the demo tree grows.
+    // Root's ROOT_BACKGROUND is [0.02, 0.06, 0.1, 1.0] (js/playground/src/
+    // index.tsx). Sample a few pixels in from the left edge, near the
+    // bottom of the actual window rather than a fixed old size — every
+    // playground child (the tile row/OverflowCarousel/PulseBox) has its own
+    // margin and sits well above this y, so this stays clear of their
+    // tinted backgrounds regardless of how tall the tree grows.
     let color = pixmap.get_color((5, height - 5));
-    assert_eq!((color.r(), color.g(), color.b()), (10, 13, 20), "root background should reach the true window bottom");
+    assert_eq!((color.r(), color.g(), color.b()), (5, 15, 26), "root background should reach the true window bottom");
 }

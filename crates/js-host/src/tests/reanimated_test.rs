@@ -15,9 +15,9 @@ fn with_timing_animation_advances_and_settles() {
     super::host::install(&rt).expect("failed to install host functions");
     let bundle = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../js/dist/bundle.js"
+        "/../../js/dist/playground.js"
     ))
-    .unwrap_or_else(|e| panic!("read js/dist/bundle.js: {e} (run `pnpm build` in js/)"));
+    .unwrap_or_else(|e| panic!("read js/dist/playground.js: {e} (run `pnpm build` in js/)"));
     rt.eval(&bundle).expect("bundle JS failed");
     // ConcurrentRoot's initial commit needs a frame pump too — see
     // `pump_frames` and `bundle_test`.
@@ -28,8 +28,8 @@ fn with_timing_animation_advances_and_settles() {
         super::host::with_scene(|scene| {
             let root = scene.root.expect("bundle should have set a scene root");
             scene.compute_layout(1024.0, 640.0);
-            // PulseBadge is App's last child (see index.tsx) — robust to
-            // however many siblings render before it.
+            // PulseBox is App's last child (see js/playground/src/index.tsx)
+            // — robust to however many siblings render before it.
             let badge = *scene.children_of(root).last().expect("root should have children");
             scene.layout_of(badge).2
         })
