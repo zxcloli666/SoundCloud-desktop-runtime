@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "paths": {
+      "react-native": ["../js/src/react-native.tsx"],
+      "@shopify/react-native-skia": ["../js/src/rnskia.tsx"],
+      "react-native-reanimated": ["../js/src/reanimated.tsx"]
+    }
+  }
+}

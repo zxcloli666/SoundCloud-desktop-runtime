@@ -1,0 +1,22 @@
+{
+  "name": "desktop-runtime-compat",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "check:real": "tsc -p tsconfig.real.json",
+    "check:shims": "tsc -p tsconfig.shims.json",
+    "check": "pnpm check:real && pnpm check:shims",
+    "generate-table": "node generate-table.mjs"
+  },
+  "devDependencies": {
+    "@shopify/react-native-skia": "2.6.9",
+    "@types/react": "19.2.3",
+    "@types/react-reconciler": "^0.28.9",
+    "react": "19.2.3",
+    "react-native": "0.86.0",
+    "react-native-reanimated": "4.5.0",
+    "react-reconciler": "0.33.0",
+    "typescript": "^6.0.3"
+  }
+}
