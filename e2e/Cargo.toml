@@ -1,0 +1,23 @@
+[package]
+name = "soundcloud-e2e"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# Bare `[package]` + empty `[workspace]` = the single-crate-workspace idiom:
+# this one package is implicitly its own sole workspace member. Same
+# fencing reasoning as examples/soundcloud/Cargo.toml — a real, separate
+# Cargo workspace with its own Cargo.lock, so the root workspace's `cargo
+# build`/`cargo test` never reaches this (or `sc-rn` through it).
+[workspace]
+
+[dependencies]
+js-host = { path = "../crates/js-host" }
+sc-desktop-ops = { path = "../examples/soundcloud/crates/sc-desktop-ops" }
+serde_json = "1.0.150"
+
+# This whole crate — the "go to town" full-stack test suite (README below)
+# — requires `Core` checked out as a sibling of `Desktop-Runtime` (same
+# constraint as examples/soundcloud/Cargo.toml) and a `pnpm build` in
+# examples/soundcloud/js to have produced its real @sc/ui `dist/bundle.js`.

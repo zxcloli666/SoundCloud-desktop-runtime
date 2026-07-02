@@ -40,16 +40,14 @@ fn pump_frames(rt: &Runtime, count: u32) {
 // Every test module below is a real Hermes/Yoga/Skia exercise, not a mock —
 // see Desktop-Runtime/CLAUDE.md's "Спайк 8" for why they're split into files
 // under `tests/` instead of one long `lib.rs`. All of them are zero-dependency:
-// `bundle_test`/`reanimated_test`/`fills_arbitrary_aspect_ratio_test`
-// currently load `js/dist/bundle.js` (today's real `@sc/ui` demo) — they're
-// staying here only transitionally, see CLAUDE.md's migration notes; they
-// move to a zero-dep playground fixture shortly.
+// `bundle_test`/`reanimated_test`/`fills_arbitrary_aspect_ratio_test` load
+// `js/dist/playground.js` — this crate's own synthetic, zero-@sc/ui demo
+// bundle (js/playground/src/index.tsx), not the real SoundCloud one.
 //
-// `tests/live_data_test.rs` (real sc_rn::auth_status() over the async
-// bridge) is NOT declared below anymore — this crate has zero sc-rn
-// awareness now (see host.rs/Cargo.toml), so it can't compile-and-pass here.
-// The file sits undeclared, staged for its real move to `e2e/tests/
-// auth_bridge.rs`, which has an actual sc-rn dependency to test against.
+// The real `@sc/ui`-dependent tests (real sc_rn::auth_status() over the
+// async bridge, real @sc/ui press/scroll contract checks) live in
+// `e2e/tests/` instead — this crate has zero sc-rn awareness (see host.rs/
+// Cargo.toml), so they can't compile-and-pass here.
 #[cfg(test)]
 #[path = "tests/smoke.rs"]
 mod tests;

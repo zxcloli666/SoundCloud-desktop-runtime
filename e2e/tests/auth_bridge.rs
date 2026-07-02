@@ -2,7 +2,9 @@
 //! host function with a callback id, `sc_rn::auth_status()` runs to
 //! completion on `async_bridge`'s background tokio runtime, and its result
 //! reaches JS as a resolved Promise value, entirely through the same
-//! `deliver()` polling rn-linux's render loop uses (no test-only shortcut).
+//! `deliver()` polling `sc-desktop-example`'s render loop uses (no
+//! test-only shortcut). Requires `Core` checked out as a sibling of
+//! `Desktop-Runtime` — see e2e/Cargo.toml.
 //!
 //! `rt.eval(...)` below only ever runs small, hardcoded inline JS owned by
 //! this test, never external input — Hermes' ordinary script-execution
@@ -13,10 +15,11 @@ use std::time::Duration;
 
 #[test]
 fn auth_status_round_trips_through_the_real_async_bridge() {
-    let rt = super::Runtime::new().expect("failed to create Hermes runtime");
-    super::host::install(&rt).expect("failed to install host functions");
+    let rt = js_host::Runtime::new().expect("failed to create Hermes runtime");
+    js_host::host::install(&rt).expect("failed to install host functions");
+    sc_desktop_ops::install(&rt).expect("failed to install sc-desktop-ops");
 
-    let tmp = std::env::temp_dir().join(format!("sc-rn-live-data-test-{}", std::process::id()));
+    let tmp = std::env::temp_dir().join(format!("sc-rn-e2e-auth-bridge-test-{}", std::process::id()));
     let data_dir = tmp.join("data");
     let cache_dir = tmp.join("cache");
     std::fs::create_dir_all(&data_dir).expect("create data dir");
@@ -48,23 +51,20 @@ fn auth_status_round_trips_through_the_real_async_bridge() {
         };
         // A distinctive, out-of-range callback id — not 1: `async_bridge`'s
         // tokio runtime/mpsc channel (js-host/src/async_bridge.rs) is one
-        // process-global instance shared by every `Runtime::new()` in
-        // this test binary. The bundle's own `live-data.ts` module
-        // (evaluated by bundle_test/reanimated_test/
-        // fills_arbitrary_aspect_ratio_test, each a *separate* Hermes
-        // runtime) fires its `LiveDataProbe`'s `authStatus()` with
-        // callback ids starting at 1 too — a small hardcoded id here
-        // could receive one of *their* stale results instead of this
-        // call's own.
+        // process-global instance shared by every `Runtime::new()` in this
+        // test binary. `real_ui_integration.rs`'s real @sc/ui bundle fires
+        // its own `LiveDataProbe`'s `authStatus()` with callback ids
+        // starting at 1 too — a small hardcoded id here could receive one
+        // of *its* stale results instead of this call's own.
         __scAuthStatus(100001);
         "#,
     )
     .expect("eval failed");
 
-    // Mirrors rn-linux's render loop: poll `deliver()` once per "frame"
+    // Mirrors the real render loop: poll `deliver()` once per "frame"
     // instead of blocking on the background runtime directly.
     for _ in 0..200 {
-        super::async_bridge::deliver(&rt);
+        js_host::async_bridge::deliver(&rt);
         let done = rt.eval("globalThis.__testDone").expect("poll eval failed").as_bool().unwrap_or(false);
         if done {
             break;
@@ -123,7 +123,7 @@ fn auth_status_round_trips_through_the_real_async_bridge() {
     .expect("eval failed");
 
     for _ in 0..200 {
-        super::async_bridge::deliver(&rt);
+        js_host::async_bridge::deliver(&rt);
         let done = rt.eval("globalThis.__testDone2").expect("poll eval failed").as_bool().unwrap_or(false);
         if done {
             break;
