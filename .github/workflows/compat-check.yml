@@ -51,6 +51,14 @@ jobs:
         env:
           LATEST_JSON: ${{ steps.versions.outputs.latest_json }}
 
+      # compat/'s tsconfig type-checks js/src/*.tsx directly (path-aliased,
+      # not copied) — those files' own `import ... from 'react'` needs
+      # js/'s own node_modules to exist alongside compat/'s.
+      - name: Install js/'s own dependencies
+        if: steps.versions.outputs.changed == 'true'
+        working-directory: js
+        run: pnpm install --no-frozen-lockfile
+
       - name: Structural compatibility check
         if: steps.versions.outputs.changed == 'true'
         working-directory: compat
@@ -75,7 +83,7 @@ jobs:
       - name: Engine JS build + typecheck
         if: steps.versions.outputs.changed == 'true'
         working-directory: js
-        run: pnpm install --no-frozen-lockfile && pnpm build && pnpm typecheck
+        run: pnpm build && pnpm typecheck
 
       - name: Apply new versions + regenerate compatibility table
         if: steps.versions.outputs.changed == 'true'

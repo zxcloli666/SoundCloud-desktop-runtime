@@ -18,5 +18,8 @@
     "@types/react-reconciler": "^0.28.9",
     "esbuild": "^0.25.0",
     "typescript": "^6.0.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
   }
 }

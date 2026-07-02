@@ -56,5 +56,11 @@ jobs:
         with:
           node-version: 22
 
+      # compat/'s tsconfig type-checks js/src/*.tsx directly (path-aliased,
+      # not copied) — those files' own `import ... from 'react'` needs
+      # js/'s own node_modules to exist alongside compat/'s.
+      - working-directory: js
+        run: pnpm install --no-frozen-lockfile
+
       - working-directory: compat
         run: pnpm install --no-frozen-lockfile && pnpm check
