@@ -88,7 +88,7 @@ jobs:
       - name: Apply new versions + regenerate compatibility table
         if: steps.versions.outputs.changed == 'true'
         working-directory: compat
-        run: node apply-versions.mjs "$LATEST_JSON"
+        run: node apply-versions.mjs "$LATEST_JSON" "$(date -u +%Y-%m-%d)"
         env:
           LATEST_JSON: ${{ steps.versions.outputs.latest_json }}
 

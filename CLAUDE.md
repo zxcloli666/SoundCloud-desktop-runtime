@@ -46,9 +46,14 @@ Desktop-Runtime/          ДВИЖОК — корневой Cargo/pnpm workspace
                           SC-специфичных или иных внешних зависимостей
   crates/skia-desktop/   GPU-Skia surface (skia-safe + winit/glutin)
   crates/js-host/        Hermes-рантайм + сцена-дерево (реальная Yoga) +
-                         15 генерик host-функций для JS
-  crates/rn-linux/       lib.rs (RunConfig/run — публичная библиотека) +
-                         тонкий main.rs: winit-окно + event loop
+                         16 генерик host-функций для JS
+  crates/rn-linux/       lib.rs (RunConfig/run — публичная библиотека,
+                         платформо-агностичная) + тонкий main.rs: winit-окно
+                         + event loop
+  crates/rn-windows/     тот же движок (rn_linux::run) под своим
+                         `rn-windows.exe` — свой main.rs, ноль
+                         платформенного кода: winit/glutin/skia-safe уже
+                         кроссплатформенны сами по себе
   js/                    react-reconciler host-config + react-native/
                          react-native-skia/reanimated-совместимые шимы +
                          свой zero-dep playground (js/playground/) —
@@ -88,7 +93,8 @@ compat/                    структурная сверка шимов про
 Движок (ничего кроме этого репо не нужно):
 ```
 cd js && pnpm install && pnpm build   # → js/dist/playground.js
-cargo run -p rn-linux                 # рендерит playground
+cargo run -p rn-linux                 # рендерит playground (Linux)
+cargo run -p rn-windows               # тот же playground, Windows-бинарь
 cargo test --workspace                # 20+ тестов, полностью zero-dep
 ```
 
@@ -106,10 +112,14 @@ cd e2e && cargo test   # реальный sc-rn + реальный @sc/ui
   `sc-rn`, полное покрытие шимов против реального usage `@sc/ui`.
 - **Windows**: архитектурный блокер (сборка `rusty_hermes`/
   `libhermes-sys` под MSVC) снят — реальный Hermes собирается и выполняет
-  JS на Windows (см. `docs/pitfalls/windows-msvc-build.md`). Сам
-  `rn-windows`-бинарь (winit/glutin/skia-safe уже поддерживают Windows
-  теми же крейтами, что и `rn-linux`) — рутинный скаффолд, ещё не
-  сделан.
+  JS на Windows (см. `docs/pitfalls/windows-msvc-build.md`, проверено на
+  живой Windows-машине). `crates/rn-windows/` собран и подтверждён на
+  этом же Linux-хосте (тот же кроссплатформенный winit/glutin/skia-safe
+  стек, что у `rn-linux`, — ни строчки платформенного Rust-кода в самом
+  движке) — рендерит playground один в один с `rn-linux`. Сам прогон
+  `rn-windows.exe` на реальной Windows-машине (а не просто сборка Hermes
+  под MSVC) в этом заходе не переделывался — это единственное, что
+  формально не переподтверждено живым запуском на Windows.
 
 ## Публикация
 

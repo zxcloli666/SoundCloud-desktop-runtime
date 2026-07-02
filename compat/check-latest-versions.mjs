@@ -17,9 +17,10 @@ async function latestVersion(pkg) {
 const pkgNames = Object.keys(versions.packages);
 const latest = Object.fromEntries(await Promise.all(pkgNames.map(async (pkg) => [pkg, await latestVersion(pkg)])));
 
-const changed = pkgNames.filter((pkg) => latest[pkg] !== versions.packages[pkg]);
+const changed = pkgNames.filter((pkg) => latest[pkg] !== versions.packages[pkg].current);
 
-const result = { changed: changed.length > 0, changedPackages: changed, pinned: versions.packages, latest };
+const pinned = Object.fromEntries(pkgNames.map((pkg) => [pkg, versions.packages[pkg].current]));
+const result = { changed: changed.length > 0, changedPackages: changed, pinned, latest };
 console.log(JSON.stringify(result, null, 2));
 
 if (process.env.GITHUB_OUTPUT) {

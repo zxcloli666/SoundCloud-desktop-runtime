@@ -4,6 +4,33 @@ How to depend on Desktop-Runtime from your own project: install, render a
 minimal tree, write a bundle against the shims, and plug in your own host
 functions. (Русская версия: [`usage.ru.md`](./usage.ru.md).)
 
+## 0. The cross-platform story — bringing an existing RN app to desktop
+
+If you already have a React Native app — iOS, Android, maybe macOS via
+`react-native-macos` — using `@shopify/react-native-skia` for custom
+drawing, Desktop-Runtime is how the *same* app reaches Windows and Linux
+too, without a fork and without rewriting your components:
+
+1. Your component code (`View`/`Text`/`Pressable`/`Canvas`/`Group`/
+   `useSharedValue`/...) doesn't change. It already only talks to
+   `react-native`/`@shopify/react-native-skia`/`react-native-reanimated`'s
+   public API — that's the whole contract.
+2. On mobile and macOS, those imports resolve to the real native modules,
+   same as always.
+3. On Windows/Linux, your build tags a *desktop* bundle where those same
+   imports resolve to Desktop-Runtime's shims instead (section 3 below) —
+   one esbuild `alias` entry, the same trick `react-native-web` uses for
+   browser builds. Nothing in your component tree needs to know which
+   target it's running on.
+4. A small, desktop-only Rust binary (section 2) opens the window and
+   hosts that bundle — this is new code you write once per app (it's your
+   app's desktop entry point, Desktop-Runtime can't own that for you), not
+   something you fork out of an existing project.
+
+The result: one component codebase, five platforms. See
+[`compat/README.md`](../compat/README.md) for exactly how "your Skia code
+still works on Windows/Linux" gets verified, not just asserted.
+
 ## 1. Install
 
 Rust crates and the JS package are published to this repo's own
@@ -15,21 +42,33 @@ directly.
 ```toml
 [registries]
 desktop-runtime = { index = "sparse+https://zxcloli666.github.io/SoundCloud-desktop-runtime/registry/" }
+rusty-hermes-fork = { index = "sparse+https://zxcloli666.github.io/rusty_hermes/registry/" }
 ```
 
 **`Cargo.toml`:**
 
 ```toml
 [dependencies]
-rn-linux = { version = "0.1.0", registry = "desktop-runtime" }
+rn-linux = { version = "0.1.0", registry = "desktop-runtime" }     # Linux
+rn-windows = { version = "0.1.0", registry = "desktop-runtime" }   # Windows
 js-host = { version = "0.1.0", registry = "desktop-runtime" }
 ```
 
-or `cargo add rn-linux --registry desktop-runtime`. `js-host`'s own
-dependency on `rusty_hermes` (the Hermes binding) resolves transitively
-from the same registry — nothing extra to configure. The first build
-compiles Hermes from source, ~7-8 minutes on Linux; later builds reuse
-the compiled artifact like any other dependency.
+`rn-linux` and `rn-windows` expose the identical `run(RunConfig)` API
+(`rn-windows` is a thin binary crate over the same platform-agnostic
+`rn_linux::run` — nothing in the engine is actually Linux-specific, so
+there's no separate `rn_windows::run` to learn); pick whichever matches
+your `cargo build --target` and only depend on that one, or gate both
+behind `[target.'cfg(windows)'.dependencies]` / `[target.'cfg(unix)'.
+dependencies]` in your own `Cargo.toml` if you build for both from one
+crate. `cargo add rn-linux --registry desktop-runtime` (or `rn-windows`).
+`js-host`'s own
+dependency on `rusty_hermes` (the Hermes binding, published from its own
+repo's registry — see [`registry.md`](./registry.md)) resolves
+transitively — nothing extra to configure beyond the two registries
+above. The first build compiles Hermes from source, ~7-8 minutes on
+Linux; later builds reuse the compiled artifact like any other
+dependency.
 
 **JS package** (the shims + react-reconciler host-config):
 
@@ -63,9 +102,9 @@ fn main() {
 ```
 
 `bundle_path` points at a JS bundle built against the engine's shims (next
-section) — `rn-linux` doesn't care what's in it beyond that it calls
-`react-reconciler`'s `updateContainer` against the host-config the engine
-already registered.
+section) — `rn-linux`/`rn-windows` don't care what's in it beyond that it
+calls `react-reconciler`'s `updateContainer` against the host-config the
+engine already registered.
 
 ## 3. Writing a bundle against the shims
 
@@ -137,7 +176,7 @@ Native.
 
 If your app needs native capabilities beyond rendering (auth, local data,
 platform APIs — whatever your app is for), register your own
-`js_host::hermes_op` functions on top of the engine's 15 generic ones, via
+`js_host::hermes_op` functions on top of the engine's 16 generic ones, via
 `RunConfig::before_bundle_eval`:
 
 ```rust
@@ -177,13 +216,9 @@ versions the shims are verified against, and
 [`docs/pitfalls/`](./pitfalls/) for real bugs already found and fixed —
 worth a skim if something behaves unexpectedly.
 
-Known gaps, not yet implemented:
-- `<Image resizeMode="repeat">` falls back to `cover` (no tiling).
-- Numeric `require()`'d image assets render as an empty box (no
-  bundler-level asset pipeline) — `source={{ uri }}` works fully,
-  including real network fetch + decode.
-- List reordering (`insertBefore` with a real `beforeChild`) isn't
-  implemented — append-only. Fine for the vast majority of UI, not fine
-  for drag-to-reorder lists.
-- Windows: the architectural blocker (Hermes under MSVC) is solved, but
-  there's no `rn-windows` binary yet — only `rn-linux` today.
+`rn-windows` builds and renders on the same platform-agnostic engine as
+`rn-linux` (nothing OS-specific in `crates/` beyond `winit`/`glutin`/
+`skia-safe`/`rusty_hermes` themselves, all of which already support
+Windows upstream — see `docs/pitfalls/windows-msvc-build.md` for the one
+thing that genuinely was Windows-specific: getting Hermes itself through
+MSVC).

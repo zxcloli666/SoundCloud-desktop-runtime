@@ -12,10 +12,24 @@ if (Object.keys(latest).length === 0) {
   throw new Error('usage: node apply-versions.mjs \'{"react-native":"0.87.0",...}\'');
 }
 
+// `verifiedAt` comes from argv[3] (a workflow-provided date), not
+// `new Date()` — this script also runs inside orchestrated re-runs where
+// wall-clock time isn't a stable input.
+const verifiedAt = process.argv[3];
+if (!verifiedAt) throw new Error('usage: node apply-versions.mjs \'{"pkg":"version",...}\' YYYY-MM-DD');
+
 const versionsPath = new URL('./VERSIONS.json', import.meta.url);
 const versions = JSON.parse(readFileSync(versionsPath, 'utf8'));
-versions.packages = { ...versions.packages, ...latest };
-versions.lastVerified = new Date().toISOString().slice(0, 10);
+for (const [name, version] of Object.entries(latest)) {
+  const entry = versions.packages[name];
+  if (!entry) continue;
+  entry.current = version;
+  // History never gets a duplicate consecutive version — a re-run that
+  // reconfirms the same already-current version isn't a new data point.
+  if (entry.history[entry.history.length - 1]?.version !== version) {
+    entry.history.push({ version, verifiedAt });
+  }
+}
 writeFileSync(versionsPath, JSON.stringify(versions, null, 2) + '\n');
 
 const pkgPath = new URL('./package.json', import.meta.url);
