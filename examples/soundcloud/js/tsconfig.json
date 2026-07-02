@@ -10,10 +10,10 @@
     "noEmit": true,
     "esModuleInterop": true,
     "paths": {
-      "react-native": ["./src/react-native.tsx"],
-      "@shopify/react-native-skia": ["./src/rnskia.tsx"],
-      "react-native-reanimated": ["./src/reanimated.tsx"]
+      "react-native": ["../../../js/src/react-native.tsx"],
+      "@shopify/react-native-skia": ["../../../js/src/rnskia.tsx"],
+      "react-native-reanimated": ["../../../js/src/reanimated.tsx"]
     }
   },
-  "include": ["src", "playground/src"]
+  "include": ["src"]
 }

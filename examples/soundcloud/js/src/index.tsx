@@ -1,17 +1,20 @@
 // Spike 7a: the real `@sc/ui` package, unmodified, importing 'react-native' /
 // '@shopify/react-native-skia' / 'react-native-reanimated' — resolved at
-// bundle time (build.mjs `alias`) to our shims instead of the real native
-// modules. `Atmosphere` below is @sc/ui's own component, not a local copy.
+// bundle time (build.mjs `alias`) to the engine's shims instead of the real
+// native modules. `Atmosphere` below is @sc/ui's own component, not a local
+// copy. This whole file is SoundCloud-specific integration code, not part
+// of the engine (Desktop-Runtime/CLAUDE.md, "Спайк 8") — the shims/
+// hostConfig it imports live one repo-relative level up, in `js/src/`.
 import { Atmosphere, Avatar, Button, Card, GlassSurface, HorizontalScroll, SectionHeader, ThemeProvider, TrackRow, Waveform } from '@sc/ui';
 import React from 'react';
 import Reconciler from 'react-reconciler';
 import { ConcurrentRoot } from 'react-reconciler/constants';
 
-import { hostConfig } from './hostConfig';
+import { hostConfig } from '../../../../js/src/hostConfig';
 import { authStatus } from './live-data';
-import { Text, View } from './react-native';
-import { Animated, useAnimatedStyle, useSharedValue, withTiming } from './reanimated';
-import { Blur, Box, BoxShadow, Canvas, Circle, Group, LinearGradient, RadialGradient, RoundedRect, rect, rrect, vec } from './rnskia';
+import { Text, View } from 'react-native';
+import { Animated, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
+import { Blur, Box, BoxShadow, Canvas, Circle, Group, LinearGradient, RadialGradient, RoundedRect, rect, rrect, vec } from '@shopify/react-native-skia';
 
 type Container = { rootId: number | null };
 interface RealReconciler {
