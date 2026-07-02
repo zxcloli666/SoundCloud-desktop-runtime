@@ -96,16 +96,32 @@ type ScrollViewProps = Props & {
 // `contentContainerStyle` (real RN applies it to an inner wrapper View
 // around the content, separate from `style` on the outer scroll clip
 // container — `HorizontalScroll`'s gap/edge-padding lives there) is honored
-// the same way. Scroll position/gestures are a later input-plumbing
-// follow-up — this never moves yet.
+// the same way. `scrollable`/`scrollHorizontal` (StyleInput, scene.rs) mark
+// the outer node as a real mouse-wheel scroll target — Scene owns the
+// actual scroll position (rn-linux's winit loop hit-tests + calls
+// Scene::scroll_by on MouseWheel), not React state, so it doesn't round-trip
+// through a re-render for every wheel tick.
 export const ScrollView = React.forwardRef<number, ScrollViewProps>((props, ref) => {
   const { style, contentContainerStyle, horizontal, children, ...rest } = props;
   return React.createElement(
     'View',
-    { style: [style, { overflow: 'hidden' }], ref },
+    { style: [style, { overflow: 'hidden', scrollable: true, scrollHorizontal: !!horizontal }], ref },
     React.createElement(
       'View',
-      { style: [contentContainerStyle, horizontal ? { flexDirection: 'row' } : null], ...rest },
+      {
+        // `alignSelf: 'flex-start'` only for `horizontal` — the content
+        // wrapper is a column-direction child of the container above, so
+        // its width is that column's cross axis, which Yoga's default
+        // `alignItems: stretch` would otherwise clamp to the container's own
+        // width — exactly the one dimension a horizontal scroll's content
+        // needs to size naturally to its row-direction children's combined
+        // width instead (there'd be nothing to scroll otherwise). A
+        // vertical scroll's content wrapper *should* stretch to the
+        // container's width — only its height (the main axis, unaffected
+        // by alignItems either way) needs to grow past the container.
+        style: [contentContainerStyle, horizontal ? { flexDirection: 'row', alignSelf: 'flex-start' } : null],
+        ...rest,
+      },
       children as React.ReactNode,
     ),
   );

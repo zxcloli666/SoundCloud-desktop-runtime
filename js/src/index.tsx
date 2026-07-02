@@ -141,7 +141,7 @@ function CoreUiProbe() {
       <TrackRow index={0} title="Первый трек" artist="Артист" durationMs={183000} active onPress={() => {}} />
       {/* Exercises ScrollView's contentContainerStyle (gap/edge padding) —
           previously silently dropped (only `style` was read). */}
-      <HorizontalScroll gap={12} edge={16}>
+      <HorizontalScroll gap={12} edge={16} style={{ width: 200 }}>
         <Card title="Карточка A" width={100} />
         <Card title="Карточка B" width={100} />
         <Card title="Карточка C" width={100} />

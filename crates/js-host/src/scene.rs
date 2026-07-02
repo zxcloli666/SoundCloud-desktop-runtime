@@ -186,6 +186,11 @@ struct LayoutPaint {
     /// looks them up via `SceneNode::parent`.
     font_size: f32,
     text_color: [f32; 4],
+    /// `(x, y)` — how far this node's *children* are shifted when drawing
+    /// (a real `ScrollView`'s scroll position), Rust-owned rather than
+    /// round-tripped through JS state for every wheel tick. Zero for every
+    /// node that was never registered via `Scene::set_scrollable`.
+    scroll_offset: (f32, f32),
 }
 
 /// RN's iOS-style View shadow (`shadowColor`/`shadowOpacity`/`shadowRadius`/
@@ -364,6 +369,14 @@ pub struct StyleInput {
     /// not the `NodeKind::Text` child — see `LayoutPaint::font_size`.
     pub color: Option<Json>,
     pub font_size: Option<f32>,
+
+    /// Set by `ScrollView`'s shim on its outer (clipping) View — marks it as
+    /// a real mouse-wheel scroll target (`Scene::scrollable_nodes`), not
+    /// merely `overflow: hidden`. `scrollable: false` (rather than just
+    /// omitting the key) explicitly un-registers it, matching how a
+    /// re-render might stop being a ScrollView.
+    pub scrollable: Option<bool>,
+    pub scroll_horizontal: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -385,6 +398,10 @@ pub struct Scene {
     /// this set, so a plain `View` with no such prop is simply invisible to
     /// pointer input rather than needing an opt-out.
     pressable_nodes: HashSet<NodeId>,
+    /// `ScrollView`'s outer (clipping) node id -> is it a horizontal list.
+    /// The actual scroll position lives on that same node's own
+    /// `LayoutPaint::scroll_offset`.
+    scrollable_nodes: HashMap<NodeId, bool>,
 }
 
 impl Scene {
@@ -479,6 +496,7 @@ impl Scene {
         parent_node.children.retain(|id| *id != child);
         self.watched_layouts.remove(&child);
         self.pressable_nodes.remove(&child);
+        self.scrollable_nodes.remove(&child);
     }
 
     /// Registers `id` for `onLayout` reporting — `drain_layout_changes()`
@@ -544,19 +562,29 @@ impl Scene {
         match parent {
             Some(p) => {
                 let (px, py) = self.absolute_origin(p)?;
-                Some((px + left, py + top))
+                // If the parent scrolls (real ScrollView), this child's
+                // drawn position is shifted by that same amount — matches
+                // `draw_layout_node`'s own `x - scroll_x, y - scroll_y`.
+                let (scroll_x, scroll_y) = self.nodes.get(&p).map(|c| c.borrow().paint.scroll_offset).unwrap_or((0.0, 0.0));
+                Some((px + left - scroll_x, py + top - scroll_y))
             }
             None => Some((left, top)),
         }
     }
 
-    fn hit_test_node(&self, id: NodeId, parent_x: f32, parent_y: f32, x: f32, y: f32) -> Option<(NodeId, f32, f32)> {
+    /// Topmost scrollable node under `(x, y)` — for routing a mouse-wheel
+    /// event, same coordinate space as `hit_test`. Unlike `hit_test`,
+    /// doesn't need to distinguish "more deeply nested wins" (scroll
+    /// containers don't usually nest in `@sc/ui`), but reuses the same
+    /// reverse-child-order/bounds-check shape for consistency.
+    pub fn hit_test_scrollable(&self, x: f32, y: f32) -> Option<NodeId> {
+        let root = self.root?;
+        self.hit_test_scrollable_node(root, 0.0, 0.0, x, y)
+    }
+
+    fn hit_test_scrollable_node(&self, id: NodeId, parent_x: f32, parent_y: f32, x: f32, y: f32) -> Option<NodeId> {
         let (nx, ny, w, h, children) = {
             let node = self.nodes.get(&id)?.borrow();
-            // Skia draw nodes have no Yoga geometry at all — nothing inside
-            // a Canvas subtree is pointer-hit-testable this way (Waveform's
-            // tap-to-seek is a Skia-specific gesture handled separately, not
-            // through generic Pressable dispatch).
             let yoga = node.yoga.as_ref()?;
             (
                 parent_x + yoga.get_layout_left(),
@@ -569,12 +597,75 @@ impl Scene {
         if x < nx || x >= nx + w || y < ny || y >= ny + h {
             return None;
         }
+        for &child in children.iter().rev() {
+            if let Some(hit) = self.hit_test_scrollable_node(child, nx, ny, x, y) {
+                return Some(hit);
+            }
+        }
+        self.scrollable_nodes.contains_key(&id).then_some(id)
+    }
+
+    /// Applies a wheel-scroll delta to `id` (a node registered via
+    /// `set_style`'s `scrollable: true`), clamped to `[0, content size -
+    /// container size]` — content size comes from `id`'s single child (the
+    /// inner wrapper `ScrollView`'s shim always renders around its actual
+    /// children, see `react-native.tsx`), same as a real scroll view can't
+    /// scroll past its own content.
+    pub fn scroll_by(&mut self, id: NodeId, dx: f32, dy: f32) {
+        let Some(&horizontal) = self.scrollable_nodes.get(&id) else { return };
+        let cell = self.nodes.get(&id).expect("scrollable node should still exist");
+        let node = cell.borrow();
+        let Some(yoga) = node.yoga.as_ref() else { return };
+        let (container_w, container_h) = (yoga.get_layout_width(), yoga.get_layout_height());
+        let Some(&content_id) = node.children.first() else { return };
+        drop(node);
+        let Some(content_cell) = self.nodes.get(&content_id) else { return };
+        let content = content_cell.borrow();
+        let Some(content_yoga) = content.yoga.as_ref() else { return };
+        let (content_w, content_h) = (content_yoga.get_layout_width(), content_yoga.get_layout_height());
+        drop(content);
+
+        let max_x = (content_w - container_w).max(0.0);
+        let max_y = (content_h - container_h).max(0.0);
+        let mut node = cell.borrow_mut();
+        let (ox, oy) = node.paint.scroll_offset;
+        // A vertical wheel conventionally scrolls a horizontal list too
+        // (there's rarely a horizontal wheel axis on a plain mouse) —
+        // `HorizontalScroll` sets `horizontal: true` for exactly this.
+        let (dx, dy) = if horizontal { (dx + dy, 0.0) } else { (dx, dy) };
+        node.paint.scroll_offset = ((ox + dx).clamp(0.0, max_x), (oy + dy).clamp(0.0, max_y));
+    }
+
+    fn hit_test_node(&self, id: NodeId, parent_x: f32, parent_y: f32, x: f32, y: f32) -> Option<(NodeId, f32, f32)> {
+        let (nx, ny, w, h, children, scroll_offset) = {
+            let node = self.nodes.get(&id)?.borrow();
+            // Skia draw nodes have no Yoga geometry at all — nothing inside
+            // a Canvas subtree is pointer-hit-testable this way (Waveform's
+            // tap-to-seek is a Skia-specific gesture handled separately, not
+            // through generic Pressable dispatch).
+            let yoga = node.yoga.as_ref()?;
+            (
+                parent_x + yoga.get_layout_left(),
+                parent_y + yoga.get_layout_top(),
+                yoga.get_layout_width(),
+                yoga.get_layout_height(),
+                node.children.clone(),
+                node.paint.scroll_offset,
+            )
+        };
+        if x < nx || x >= nx + w || y < ny || y >= ny + h {
+            return None;
+        }
         // Reverse child order: later siblings draw on top (see
         // `draw_layout_node`'s recursion order), so they should win a hit
         // first — same for a more deeply nested pressable over a broader
         // pressable ancestor (checked after recursing into children).
+        // `scroll_offset` matches `draw_layout_node`'s own shift, so a
+        // scrolled ScrollView's children are still hit at their actual
+        // drawn position, not where they'd be unscrolled.
+        let (scroll_x, scroll_y) = scroll_offset;
         for &child in children.iter().rev() {
-            if let Some(hit) = self.hit_test_node(child, nx, ny, x, y) {
+            if let Some(hit) = self.hit_test_node(child, nx - scroll_x, ny - scroll_y, x, y) {
                 return Some(hit);
             }
         }
@@ -627,6 +718,15 @@ impl Scene {
         }
         if let Some(size) = style.font_size {
             node.paint.font_size = size;
+        }
+        match style.scrollable {
+            Some(true) => {
+                self.scrollable_nodes.insert(id, style.scroll_horizontal.unwrap_or(false));
+            }
+            Some(false) => {
+                self.scrollable_nodes.remove(&id);
+            }
+            None => {}
         }
 
         let Some(yoga) = node.yoga.as_mut() else {
@@ -841,6 +941,12 @@ impl Scene {
         self.nodes.get(&id).expect("unknown node id").borrow().children.clone()
     }
 
+    /// For tests/introspection — every node currently registered as a real
+    /// `ScrollView` (`set_style`'s `scrollable: true`).
+    pub fn scrollable_node_ids(&self) -> Vec<NodeId> {
+        self.scrollable_nodes.keys().copied().collect()
+    }
+
     /// `(left, top, width, height)` relative to this node's parent — for
     /// tests/introspection; drawing walks the tree itself via `draw()`.
     pub fn layout_of(&self, id: NodeId) -> (f32, f32, f32, f32) {
@@ -855,7 +961,7 @@ impl Scene {
     }
 
     fn draw_layout_node(&self, id: NodeId, parent_x: f32, parent_y: f32, canvas: &Canvas) {
-        let (x, y, w, h, text, is_canvas, children, background, opacity, overflow_hidden, radii, border_width, border_color, shadow, parent) = {
+        let (x, y, w, h, text, is_canvas, children, background, opacity, overflow_hidden, radii, border_width, border_color, shadow, parent, scroll_offset) = {
             let node = self.nodes.get(&id).expect("unknown node id").borrow();
             let yoga = node.yoga.as_ref().expect("draw_layout_node on a non-layout node");
             let x = parent_x + yoga.get_layout_left();
@@ -883,6 +989,7 @@ impl Scene {
                 node.paint.border_color,
                 node.paint.shadow,
                 node.parent,
+                node.paint.scroll_offset,
             )
         };
 
@@ -960,8 +1067,13 @@ impl Scene {
             }
             canvas.restore();
         } else {
+            // A real ScrollView's scroll position (`Scene::scroll_by`,
+            // Rust-owned rather than round-tripped through JS state) —
+            // zero for every node that was never registered as scrollable,
+            // so this is a no-op everywhere else.
+            let (scroll_x, scroll_y) = scroll_offset;
             for child in children {
-                self.draw_layout_node(child, x, y, canvas);
+                self.draw_layout_node(child, x - scroll_x, y - scroll_y, canvas);
             }
         }
 

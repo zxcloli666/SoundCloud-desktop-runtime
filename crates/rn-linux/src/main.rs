@@ -9,7 +9,7 @@ use std::time::Instant;
 use js_host::Runtime;
 use skia_desktop::GlWindowSurface;
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{WindowAttributes, WindowId};
 
@@ -107,6 +107,23 @@ impl ApplicationHandler for App {
                     }
                 }
             }
+            WindowEvent::MouseWheel { delta, .. } => {
+                // `LineDelta` (most mice) is in "lines", not pixels — an
+                // arbitrary but reasonable-feeling multiplier, same idea as
+                // a browser's default wheel step. `PixelDelta` (trackpads)
+                // is already precise.
+                const LINE_HEIGHT_PX: f32 = 40.0;
+                let (dx, dy) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => (x * LINE_HEIGHT_PX, y * LINE_HEIGHT_PX),
+                    MouseScrollDelta::PixelDelta(p) => (p.x as f32, p.y as f32),
+                };
+                let (cx, cy) = self.cursor_pos;
+                let hit = js_host::host::with_scene(|scene| scene.hit_test_scrollable(cx, cy));
+                if let Some(id) = hit {
+                    js_host::host::with_scene(|scene| scene.scroll_by(id, dx, dy));
+                    gpu.window.request_redraw();
+                }
+            }
             WindowEvent::RedrawRequested => {
                 // react-reconciler schedules its commit through a microtask
                 // (our `queueMicrotask` shim) — Hermes only runs those when
@@ -141,6 +158,7 @@ impl ApplicationHandler for App {
                 // Whatever it changes takes effect next frame, same as any
                 // other reactive update in this render loop.
                 self.hermes.eval(DISPATCH_LAYOUT_JS).expect("dispatch layout changes failed");
+
                 js_host::host::with_scene(|scene| {
                     scene.draw(gpu.canvas());
                 });
