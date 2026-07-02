@@ -757,54 +757,61 @@ mod live_data_test {
 /// approach as `live_data_test` (no test-only shortcut, no mock server).
 #[cfg(test)]
 mod image_cache_test {
+    use std::collections::HashMap;
     use std::thread::sleep;
     use std::time::Duration;
 
     use crate::scene::NodeId;
 
-    fn wait_for_result(id: NodeId) -> Option<skia_safe::Image> {
+    // `image_cache::drain_ready()` fully empties the one process-global
+    // mpsc channel on every call — `skia_safe::Image` wraps a raw
+    // `NonNull` ref-counted handle with no `unsafe impl Send`/`Sync`
+    // anywhere in skia-safe, so a result can't be hand off to another
+    // thread via a shared stash either. Concretely: three separate
+    // `#[test]` fns each polling `drain_ready()` from their own OS thread
+    // (cargo's default) could steal and silently discard each other's
+    // genuinely-ready result — the same class of bug `live_data_test`'s
+    // callback-id collision hit, but distinctive ids alone don't fix it
+    // this time, since the problem isn't collision, it's that `drain_ready`
+    // hands *every* thread *all* ready results and non-matches get thrown
+    // away. Folding all three scenarios into one test keeps every
+    // `request`/poll on a single thread, so there's nothing to steal.
+    #[test]
+    fn fetch_lifecycle_real_url_bad_url_and_duplicate_request() {
+        let real_id: NodeId = 200_001;
+        let bad_id: NodeId = 200_002;
+        let dup_id: NodeId = 200_003;
+        let dup_url = "https://picsum.photos/id/1/100/100.jpg".to_string();
+
+        super::image_cache::request(real_id, "https://picsum.photos/id/237/200/200.jpg".to_string());
+        super::image_cache::request(bad_id, "https://picsum.photos/id/237/200/200.jpg/this-path-does-not-exist-404".to_string());
+        // Duplicate request for the same (id, url) — should be a no-op,
+        // not spawn a second fetch or panic on reentrant state.
+        super::image_cache::request(dup_id, dup_url.clone());
+        super::image_cache::request(dup_id, dup_url);
+
+        let mut pending: std::collections::HashSet<NodeId> = [real_id, bad_id, dup_id].into_iter().collect();
+        let mut results: HashMap<NodeId, Option<skia_safe::Image>> = HashMap::new();
         for _ in 0..200 {
+            if pending.is_empty() {
+                break;
+            }
             for (ready_id, image) in super::image_cache::drain_ready() {
-                if ready_id == id {
-                    return image;
+                if pending.remove(&ready_id) {
+                    results.insert(ready_id, image);
                 }
             }
-            sleep(Duration::from_millis(25));
+            if !pending.is_empty() {
+                sleep(Duration::from_millis(25));
+            }
         }
-        panic!("image fetch for node {id} did not complete within 5s");
-    }
+        assert!(pending.is_empty(), "image fetches for {pending:?} did not complete within 5s");
 
-    // `image_cache`'s state is process-global, keyed by bare NodeId — the
-    // demo bundle (`bundle_test`) now fetches real images too, on whatever
-    // small, sequentially-allocated ids its own Scene happens to assign.
-    // Distinctive, out-of-range ids here avoid the exact class of collision
-    // `live_data_test` hit earlier (see its callback-id comment).
+        let real_image = results.remove(&real_id).flatten().expect("a real, reachable JPEG URL should decode successfully");
+        assert!(real_image.width() > 0 && real_image.height() > 0, "decoded image should have real dimensions");
 
-    #[test]
-    fn fetches_and_decodes_a_real_image() {
-        let id: NodeId = 200_001;
-        super::image_cache::request(id, "https://picsum.photos/id/237/200/200.jpg".to_string());
-        let image = wait_for_result(id).expect("a real, reachable JPEG URL should decode successfully");
-        assert!(image.width() > 0 && image.height() > 0, "decoded image should have real dimensions");
-    }
+        assert!(results.remove(&bad_id).flatten().is_none(), "a 404 should decode to nothing, not panic the render loop");
 
-    #[test]
-    fn a_bad_url_resolves_to_no_image_rather_than_hanging_or_panicking() {
-        let id: NodeId = 200_002;
-        super::image_cache::request(id, "https://picsum.photos/id/237/200/200.jpg/this-path-does-not-exist-404".to_string());
-        assert!(wait_for_result(id).is_none(), "a 404 should decode to nothing, not panic the render loop");
-    }
-
-    #[test]
-    fn requesting_the_same_url_twice_for_the_same_node_is_a_no_op() {
-        // Only meaningfully testable by absence of a crash/hang — `request`
-        // is fire-and-forget, so a duplicate call spawning a second fetch
-        // wouldn't be directly observable here either way, but it
-        // shouldn't panic (e.g. on a poisoned lock from reentrant use).
-        let id: NodeId = 200_003;
-        let url = "https://picsum.photos/id/1/100/100.jpg".to_string();
-        super::image_cache::request(id, url.clone());
-        super::image_cache::request(id, url);
-        assert!(wait_for_result(id).is_some());
+        assert!(results.remove(&dup_id).flatten().is_some(), "the de-duplicated request should still resolve normally");
     }
 }
