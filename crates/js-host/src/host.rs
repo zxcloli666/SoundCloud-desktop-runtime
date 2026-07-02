@@ -79,6 +79,16 @@ fn unwatch_layout(id: u32) {
     SCENE.with(|s| s.borrow_mut().unwatch_layout(id));
 }
 
+#[hermes_op(name = "__scWatchPress")]
+fn watch_press(id: u32) {
+    SCENE.with(|s| s.borrow_mut().watch_press(id));
+}
+
+#[hermes_op(name = "__scUnwatchPress")]
+fn unwatch_press(id: u32) {
+    SCENE.with(|s| s.borrow_mut().unwatch_press(id));
+}
+
 /// Polled once per frame from `rn-linux`, after `compute_layout` — see
 /// `js/src/hostConfig.ts`'s `__scDispatchLayoutChanges`.
 #[hermes_op(name = "__scDrainLayoutChanges")]
@@ -252,6 +262,8 @@ pub fn install(rt: &Runtime) -> rusty_hermes::Result<()> {
     watch_layout::register(rt)?;
     unwatch_layout::register(rt)?;
     drain_layout_changes::register(rt)?;
+    watch_press::register(rt)?;
+    unwatch_press::register(rt)?;
     console_log::register(rt)?;
     init_core::register(rt)?;
     set_session::register(rt)?;

@@ -14,7 +14,7 @@
 //! back here every time a new screen touches one more RN style prop.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use ordered_float::OrderedFloat;
 use serde::Deserialize;
@@ -380,6 +380,11 @@ pub struct Scene {
     /// Nodes JS registered an `onLayout` listener for, with the last
     /// geometry reported — `NAN` sentinel forces the first report.
     watched_layouts: HashMap<NodeId, (f32, f32, f32, f32)>,
+    /// Nodes JS registered a press listener (`onPress`/`onPressIn`/
+    /// `onPressOut`/`onLongPress`) for — `hit_test` only returns nodes in
+    /// this set, so a plain `View` with no such prop is simply invisible to
+    /// pointer input rather than needing an opt-out.
+    pressable_nodes: HashSet<NodeId>,
 }
 
 impl Scene {
@@ -473,6 +478,7 @@ impl Scene {
         }
         parent_node.children.retain(|id| *id != child);
         self.watched_layouts.remove(&child);
+        self.pressable_nodes.remove(&child);
     }
 
     /// Registers `id` for `onLayout` reporting — `drain_layout_changes()`
@@ -503,6 +509,80 @@ impl Scene {
             }
         }
         changes
+    }
+
+    pub fn watch_press(&mut self, id: NodeId) {
+        self.pressable_nodes.insert(id);
+    }
+
+    pub fn unwatch_press(&mut self, id: NodeId) {
+        self.pressable_nodes.remove(&id);
+    }
+
+    /// Topmost pressable node under `(x, y)` (window-physical-pixel
+    /// coordinates, same space `compute_layout`'s `width`/`height` uses) —
+    /// `(id, local_x, local_y)`, `local_*` relative to that node's own
+    /// top-left corner (`GestureResponderEvent.nativeEvent.locationX/Y`).
+    /// Only ever returns a node registered via `watch_press` — a plain
+    /// `View` is simply invisible to pointer input, not merely non-blocking.
+    pub fn hit_test(&self, x: f32, y: f32) -> Option<(NodeId, f32, f32)> {
+        let root = self.root?;
+        self.hit_test_node(root, 0.0, 0.0, x, y)
+    }
+
+    /// A node's own top-left corner in window-physical-pixel coordinates —
+    /// walks up through `SceneNode::parent` summing each ancestor's
+    /// Yoga-relative offset. Used to convert a later pointer position (e.g.
+    /// on `MouseInput` release, away from where `hit_test` was originally
+    /// called on press-down) into that *same* node's local coordinates.
+    pub fn absolute_origin(&self, id: NodeId) -> Option<(f32, f32)> {
+        let (left, top, parent) = {
+            let node = self.nodes.get(&id)?.borrow();
+            let yoga = node.yoga.as_ref()?;
+            (yoga.get_layout_left(), yoga.get_layout_top(), node.parent)
+        };
+        match parent {
+            Some(p) => {
+                let (px, py) = self.absolute_origin(p)?;
+                Some((px + left, py + top))
+            }
+            None => Some((left, top)),
+        }
+    }
+
+    fn hit_test_node(&self, id: NodeId, parent_x: f32, parent_y: f32, x: f32, y: f32) -> Option<(NodeId, f32, f32)> {
+        let (nx, ny, w, h, children) = {
+            let node = self.nodes.get(&id)?.borrow();
+            // Skia draw nodes have no Yoga geometry at all — nothing inside
+            // a Canvas subtree is pointer-hit-testable this way (Waveform's
+            // tap-to-seek is a Skia-specific gesture handled separately, not
+            // through generic Pressable dispatch).
+            let yoga = node.yoga.as_ref()?;
+            (
+                parent_x + yoga.get_layout_left(),
+                parent_y + yoga.get_layout_top(),
+                yoga.get_layout_width(),
+                yoga.get_layout_height(),
+                node.children.clone(),
+            )
+        };
+        if x < nx || x >= nx + w || y < ny || y >= ny + h {
+            return None;
+        }
+        // Reverse child order: later siblings draw on top (see
+        // `draw_layout_node`'s recursion order), so they should win a hit
+        // first — same for a more deeply nested pressable over a broader
+        // pressable ancestor (checked after recursing into children).
+        for &child in children.iter().rev() {
+            if let Some(hit) = self.hit_test_node(child, nx, ny, x, y) {
+                return Some(hit);
+            }
+        }
+        if self.pressable_nodes.contains(&id) {
+            Some((id, x - nx, y - ny))
+        } else {
+            None
+        }
     }
 
     pub fn set_style(&mut self, id: NodeId, style: StyleInput) {

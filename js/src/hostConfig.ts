@@ -14,6 +14,8 @@ declare const __scSetRoot: (id: number) => void;
 declare const __scWatchLayout: (id: number) => void;
 declare const __scUnwatchLayout: (id: number) => void;
 declare const __scDrainLayoutChanges: () => string;
+declare const __scWatchPress: (id: number) => void;
+declare const __scUnwatchPress: (id: number) => void;
 
 // Everything except View/Text/Canvas is a Skia draw node (js-host/src/scene.rs)
 // — no Yoga, raw props instead of flexbox style. Canvas itself IS a layout
@@ -42,7 +44,7 @@ const SK_DRAW_TYPES = new Set([
 
 import { DefaultEventPriority } from 'react-reconciler/constants';
 
-import type { LayoutChangeEvent, StyleProp } from './react-native';
+import type { GestureResponderEvent, LayoutChangeEvent, StyleProp } from './react-native';
 
 // react-reconciler@0.32 also exports `NoEventPriority` (= 0) from this module,
 // but @types/react-reconciler is pinned to 0.28 and doesn't know about it yet.
@@ -59,6 +61,10 @@ export type ViewProps = {
   style?: ViewStyleValue;
   children?: unknown;
   onLayout?: (event: LayoutChangeEvent) => void;
+  onPress?: (event: GestureResponderEvent) => void;
+  onPressIn?: (event: GestureResponderEvent) => void;
+  onPressOut?: (event: GestureResponderEvent) => void;
+  onLongPress?: (event: GestureResponderEvent) => void;
 };
 
 type Instance = number;
@@ -99,13 +105,29 @@ function applyStyle(id: Instance, props: ViewProps): void {
   }
 
   const onLayout = props.onLayout;
-  const wasWatching = layoutListeners.has(id);
+  const wasWatchingLayout = layoutListeners.has(id);
   if (onLayout) {
     layoutListeners.set(id, onLayout);
-    if (!wasWatching) __scWatchLayout(id);
-  } else if (wasWatching) {
+    if (!wasWatchingLayout) __scWatchLayout(id);
+  } else if (wasWatchingLayout) {
     layoutListeners.delete(id);
     __scUnwatchLayout(id);
+  }
+
+  const pressHandlers = {
+    onPress: props.onPress,
+    onPressIn: props.onPressIn,
+    onPressOut: props.onPressOut,
+    onLongPress: props.onLongPress,
+  };
+  const hasPressHandler = Object.values(pressHandlers).some(Boolean);
+  const wasWatchingPress = pressListeners.has(id);
+  if (hasPressHandler) {
+    pressListeners.set(id, pressHandlers);
+    if (!wasWatchingPress) __scWatchPress(id);
+  } else if (wasWatchingPress) {
+    pressListeners.delete(id);
+    __scUnwatchPress(id);
   }
 }
 
@@ -134,6 +156,38 @@ const layoutListeners = new Map<Instance, (event: LayoutChangeEvent) => void>();
     const listener = layoutListeners.get(c.id);
     listener?.({ nativeEvent: { layout: { x: c.x, y: c.y, width: c.width, height: c.height } } });
   }
+};
+
+type PressHandlers = {
+  onPress?: (event: GestureResponderEvent) => void;
+  onPressIn?: (event: GestureResponderEvent) => void;
+  onPressOut?: (event: GestureResponderEvent) => void;
+  onLongPress?: (event: GestureResponderEvent) => void;
+};
+
+// id -> the Pressable-family callbacks currently set on that node. Real
+// pointer hit-testing lives in Rust (rn-linux's winit event loop + Scene::
+// hit_test, js-host/src/scene.rs) — __scWatchPress/__scUnwatchPress just
+// tell it which nodes are eligible targets at all.
+const pressListeners = new Map<Instance, PressHandlers>();
+
+// Called directly from rn-linux on mouse press/release (not per-frame
+// polled, unlike layout changes — presses are discrete events, not
+// continuously-changing state) — see `App::dispatch_press` in rn-linux/src/
+// main.rs.
+(globalThis as Record<string, unknown>).__scDispatchPress = function scDispatchPress(
+  id: number,
+  phase: 'pressIn' | 'pressOut' | 'press',
+  locationX: number,
+  locationY: number,
+  pageX: number,
+  pageY: number,
+): void {
+  const handlers = pressListeners.get(id);
+  if (!handlers) return;
+  const event: GestureResponderEvent = { nativeEvent: { locationX, locationY, pageX, pageY } };
+  const handler = phase === 'pressIn' ? handlers.onPressIn : phase === 'pressOut' ? handlers.onPressOut : handlers.onPress;
+  handler?.(event);
 };
 
 // react-native-skia lets *any* prop be a Reanimated `SharedValue` instead of a
@@ -312,6 +366,7 @@ export const hostConfig = {
     skAnimatedNodes.delete(child);
     viewAnimatedNodes.delete(child);
     layoutListeners.delete(child);
+    pressListeners.delete(child);
   },
 
   removeChildFromContainer(container: Container, child: Instance): void {

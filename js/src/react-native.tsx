@@ -65,12 +65,16 @@ type PressableProps = Props & {
   onLongPress?: (event: GestureResponderEvent) => void;
 };
 
-// Renders correctly today; doesn't yet fire on*Press (no pointer-event
-// plumbing from winit into the reconciler) — tracked alongside real input.
-export const Pressable = React.forwardRef<number, PressableProps>((props, ref) => {
-  const { onPress: _onPress, onPressIn: _onPressIn, onPressOut: _onPressOut, onLongPress: _onLongPress, ...rest } = props;
-  return React.createElement('View', { ...rest, ref });
-});
+// `onPress`/`onPressIn`/`onPressOut`/`onLongPress` pass straight through to
+// the host 'View' type unchanged — hostConfig.ts reads them off `props`
+// directly (real pointer hit-testing from rn-linux's winit event loop,
+// dispatched through __scWatchPress/__scDispatchPress) rather than Pressable
+// doing anything itself. `TouchableOpacity`/`TouchableHighlight`/
+// `TouchableWithoutFeedback` inherit this the same way real RN's do, being
+// Pressable-based wrappers themselves.
+export const Pressable = React.forwardRef<number, PressableProps>((props, ref) =>
+  React.createElement('View', { ...props, ref }),
+);
 
 export const TouchableOpacity = Pressable;
 export const TouchableHighlight = Pressable;

@@ -208,6 +208,43 @@ mod bundle_test {
             assert!(w > 0.0 && h > 0.0, "root should have a non-empty layout");
         });
     }
+
+    /// Proves `hostConfig.ts`'s press-registration path for real — not just
+    /// `Scene::hit_test`'s own algorithm (see `hit_test_test`, which calls
+    /// `watch_press` directly, bypassing JS entirely). The demo bundle's
+    /// `CoreUiProbe` mounts several real `@sc/ui` components with `onPress`
+    /// set (Button/Card/TrackRow); if `<Pressable onPress={...}>` reaching
+    /// `applyStyle` correctly calls `__scWatchPress`, at least one real,
+    /// on-screen coordinate should hit-test successfully.
+    #[test]
+    fn real_pressable_components_register_with_scene_hit_test() {
+        let rt = super::Runtime::new().expect("failed to create Hermes runtime");
+        super::host::install(&rt).expect("failed to install host functions");
+        let bundle = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../js/dist/bundle.js"
+        ))
+        .unwrap_or_else(|e| panic!("read js/dist/bundle.js: {e} (run `pnpm build` in js/)"));
+        rt.eval(&bundle).expect("bundle JS failed");
+        super::pump_frames(&rt, 10);
+
+        let (width, height) = (1024.0, 640.0);
+        let found_a_hit = super::host::with_scene(|scene| {
+            scene.compute_layout(width, height);
+            let (cols, rows) = (40, 40);
+            for i in 0..cols {
+                for j in 0..rows {
+                    let x = width * (i as f32 + 0.5) / cols as f32;
+                    let y = height * (j as f32 + 0.5) / rows as f32;
+                    if scene.hit_test(x, y).is_some() {
+                        return true;
+                    }
+                }
+            }
+            false
+        });
+        assert!(found_a_hit, "expected at least one registered pressable node somewhere in the demo tree (Button/Card/TrackRow all set onPress)");
+    }
 }
 
 /// Spike 6: proves the reanimated tick loop actually advances a `withTiming`
@@ -337,6 +374,98 @@ mod hermes_for_of_let_closure_bug_test {
             r#"{"firstFnType":"string","firstFnValue":"1.2.3"}"#,
             "if this ever reads back as a function, the Hermes bug is fixed — go remove the build.mjs __copyProps patch",
         );
+    }
+}
+
+/// `Scene::hit_test` (pointer input, rn-linux's winit event loop) is pure
+/// Rust logic against real Yoga layout — no Hermes/JS involved, so it's
+/// tested directly through `Scene`'s own API rather than through a bundle.
+#[cfg(test)]
+mod hit_test_test {
+    use crate::scene::{Scene, StyleInput};
+
+    fn style(json: &str) -> StyleInput {
+        serde_json::from_str(json).expect("valid style JSON")
+    }
+
+    #[test]
+    fn finds_the_watched_pressable_and_ignores_an_unwatched_sibling() {
+        let mut scene = Scene::new();
+        let root = scene.create_view();
+        scene.set_style(root, style(r#"{"width": 300, "height": 300}"#));
+        scene.set_root(root);
+
+        let plain = scene.create_view();
+        scene.set_style(plain, style(r#"{"width": 100, "height": 100, "position": "absolute", "left": 0, "top": 0}"#));
+        scene.append_child(root, plain);
+
+        let pressable = scene.create_view();
+        scene.set_style(pressable, style(r#"{"width": 100, "height": 100, "position": "absolute", "left": 100, "top": 0}"#));
+        scene.append_child(root, pressable);
+        scene.watch_press(pressable);
+
+        scene.compute_layout(300.0, 300.0);
+
+        assert_eq!(scene.hit_test(150.0, 50.0).map(|(id, _, _)| id), Some(pressable), "inside the watched pressable");
+        assert_eq!(scene.hit_test(50.0, 50.0), None, "inside the plain view — never watched, so invisible to hit-testing");
+        assert_eq!(scene.hit_test(250.0, 250.0), None, "outside every node");
+    }
+
+    #[test]
+    fn a_nested_pressable_wins_over_its_pressable_ancestor() {
+        // Matches real touch semantics: tapping a Button inside a pressable
+        // Card should hit the Button, not bubble to the Card underneath it.
+        let mut scene = Scene::new();
+        let root = scene.create_view();
+        scene.set_style(root, style(r#"{"width": 200, "height": 200}"#));
+        scene.set_root(root);
+
+        let card = scene.create_view();
+        scene.set_style(card, style(r#"{"width": 200, "height": 200}"#));
+        scene.append_child(root, card);
+        scene.watch_press(card);
+
+        let button = scene.create_view();
+        scene.set_style(button, style(r#"{"width": 50, "height": 50, "position": "absolute", "left": 75, "top": 75}"#));
+        scene.append_child(card, button);
+        scene.watch_press(button);
+
+        scene.compute_layout(200.0, 200.0);
+
+        assert_eq!(scene.hit_test(100.0, 100.0).map(|(id, _, _)| id), Some(button), "tapping inside the button should hit it, not the card behind it");
+        assert_eq!(scene.hit_test(10.0, 10.0).map(|(id, _, _)| id), Some(card), "tapping elsewhere on the card should still hit the card");
+    }
+
+    #[test]
+    fn local_coordinates_are_relative_to_the_hit_nodes_own_origin() {
+        let mut scene = Scene::new();
+        let root = scene.create_view();
+        scene.set_style(root, style(r#"{"width": 300, "height": 300}"#));
+        scene.set_root(root);
+
+        let pressable = scene.create_view();
+        scene.set_style(pressable, style(r#"{"width": 100, "height": 60, "position": "absolute", "left": 50, "top": 20}"#));
+        scene.append_child(root, pressable);
+        scene.watch_press(pressable);
+        scene.compute_layout(300.0, 300.0);
+
+        let (id, local_x, local_y) = scene.hit_test(70.0, 45.0).expect("should hit the pressable");
+        assert_eq!(id, pressable);
+        assert_eq!((local_x, local_y), (20.0, 25.0));
+    }
+
+    #[test]
+    fn unwatch_press_makes_a_node_invisible_to_hit_testing_again() {
+        let mut scene = Scene::new();
+        let root = scene.create_view();
+        scene.set_style(root, style(r#"{"width": 100, "height": 100}"#));
+        scene.set_root(root);
+        scene.watch_press(root);
+        scene.compute_layout(100.0, 100.0);
+        assert!(scene.hit_test(50.0, 50.0).is_some());
+
+        scene.unwatch_press(root);
+        assert!(scene.hit_test(50.0, 50.0).is_none());
     }
 }
 

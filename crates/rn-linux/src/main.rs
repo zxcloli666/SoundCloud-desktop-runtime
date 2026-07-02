@@ -9,7 +9,7 @@ use std::time::Instant;
 use js_host::Runtime;
 use skia_desktop::GlWindowSurface;
 use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{WindowAttributes, WindowId};
 
@@ -28,6 +28,29 @@ struct App {
     start: Instant,
     snapshot_path: Option<PathBuf>,
     snapshot_delay_ms: u64,
+    /// Window-physical-pixel coordinates, same space `compute_layout` uses —
+    /// updated on every `CursorMoved`, read back on `MouseInput`.
+    cursor_pos: (f32, f32),
+    /// The pressable node hit on the last `MouseInput` press-down, if any —
+    /// `onPressOut`/`onPress` target this same node on release, not
+    /// whatever's under the cursor at that later moment (matches real touch
+    /// semantics: a press-and-drag-off still ends the SAME touch target).
+    pressed_node: Option<u32>,
+}
+
+impl App {
+    /// `js/src/hostConfig.ts`'s `__scDispatchPress` — a plain `eval` (not
+    /// `Function::call`+`create_value_from_json`, like the live-data bridge
+    /// uses for arbitrary backend JSON) is fine here: every argument is a
+    /// number or one of three fixed literal strings we control ourselves,
+    /// nothing to escape.
+    fn dispatch_press(&self, id: u32, phase: &str, local_x: f32, local_y: f32, page_x: f32, page_y: f32) {
+        self.hermes
+            .eval(&format!(
+                "if (typeof __scDispatchPress === 'function') __scDispatchPress({id}, {phase:?}, {local_x}, {local_y}, {page_x}, {page_y});"
+            ))
+            .expect("dispatch press failed");
+    }
 }
 
 impl ApplicationHandler for App {
@@ -50,6 +73,39 @@ impl ApplicationHandler for App {
                     ))
                     .expect("resize notify failed");
                 gpu.window.request_redraw();
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor_pos = (position.x as f32, position.y as f32);
+            }
+            WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
+                let (cx, cy) = self.cursor_pos;
+                match state {
+                    ElementState::Pressed => {
+                        let hit = js_host::host::with_scene(|scene| scene.hit_test(cx, cy));
+                        if let Some((id, local_x, local_y)) = hit {
+                            self.pressed_node = Some(id);
+                            self.dispatch_press(id, "pressIn", local_x, local_y, cx, cy);
+                        }
+                    }
+                    ElementState::Released => {
+                        if let Some(id) = self.pressed_node.take() {
+                            // Same node the press-down landed on, not
+                            // whatever's under the cursor now — a
+                            // press-and-drag-off still ends *that* touch.
+                            // `absolute_origin` re-derives local coordinates
+                            // for it at the *release* position, since
+                            // `hit_test`'s original press-down result isn't
+                            // kept around.
+                            let still_over = js_host::host::with_scene(|scene| scene.hit_test(cx, cy)).is_some_and(|(hit_id, _, _)| hit_id == id);
+                            let origin = js_host::host::with_scene(|scene| scene.absolute_origin(id));
+                            let (local_x, local_y) = origin.map(|(ox, oy)| (cx - ox, cy - oy)).unwrap_or((cx, cy));
+                            self.dispatch_press(id, "pressOut", local_x, local_y, cx, cy);
+                            if still_over {
+                                self.dispatch_press(id, "press", local_x, local_y, cx, cy);
+                            }
+                        }
+                    }
+                }
             }
             WindowEvent::RedrawRequested => {
                 // react-reconciler schedules its commit through a microtask
@@ -162,6 +218,8 @@ fn main() {
         start: Instant::now(),
         snapshot_path,
         snapshot_delay_ms,
+        cursor_pos: (0.0, 0.0),
+        pressed_node: None,
     };
     event_loop.run_app(&mut app).expect("event loop run_app failed");
 }
