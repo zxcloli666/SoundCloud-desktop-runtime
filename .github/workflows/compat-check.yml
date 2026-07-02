@@ -53,11 +53,15 @@ jobs:
 
       # compat/'s tsconfig type-checks js/src/*.tsx directly (path-aliased,
       # not copied) — those files' own `import ... from 'react'` needs
-      # js/'s own node_modules to exist alongside compat/'s.
-      - name: Install js/'s own dependencies
+      # js/'s own node_modules to exist alongside compat/'s. The build here
+      # also produces js/dist/playground.js — several js-host tests below
+      # (bundle_test, reanimated_test, fills_arbitrary_aspect_ratio_test,
+      # image_cache_test) load that real bundle from disk, so it has to
+      # exist before "Full zero-dependency engine test suite" runs.
+      - name: Install js/'s own dependencies + build the playground bundle
         if: steps.versions.outputs.changed == 'true'
         working-directory: js
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --no-frozen-lockfile && pnpm build
 
       - name: Structural compatibility check
         if: steps.versions.outputs.changed == 'true'
@@ -80,10 +84,10 @@ jobs:
         if: steps.versions.outputs.changed == 'true'
         run: cargo test --workspace
 
-      - name: Engine JS build + typecheck
+      - name: Engine JS typecheck
         if: steps.versions.outputs.changed == 'true'
         working-directory: js
-        run: pnpm build && pnpm typecheck
+        run: pnpm typecheck
 
       - name: Apply new versions + regenerate compatibility table
         if: steps.versions.outputs.changed == 'true'
