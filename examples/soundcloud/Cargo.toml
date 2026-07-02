@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = ["crates/sc-desktop-ops"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+publish = false
+
+# This whole subtree — everything under examples/soundcloud — is how
+# SoundCloud itself integrates the Desktop-Runtime engine (crates/ + js/ at
+# the repo root). It is a SEPARATE Cargo workspace on purpose: Cargo's
+# manifest discovery walks up from a crate's own directory and stops at the
+# nearest ancestor `Cargo.toml` with a `[workspace]` table, so `cargo build`/
+# `cargo test` run from crates under here never reach the root workspace
+# (and vice versa — the root workspace's `exclude` also fences this off).
+#
+# sc-rn: plain sibling-repo path dep (see crates/sc-desktop-ops/Cargo.toml),
+# not the git+[patch] pattern Desktop/app and Mobile/app use (see
+# Core/CLAUDE.md) — that pattern needs Core's remote to actually have this
+# crate pushed, and right now Core's GitHub repo is stuck at its very first
+# commit with everything else (this crate included) sitting uncommitted in
+# the local working tree. Switch back to git+[patch] once Core commits/
+# pushes shared/crates/sc-rn for real. Until then: this subtree requires
+# `Core` checked out as a sibling of `Desktop-Runtime` (i.e. at `../../../Core`
+# relative to this file) to build at all — it is NOT part of the published
+# engine and is never touched by the root workspace's `cargo build`/`cargo test`.

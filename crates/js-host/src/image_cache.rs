@@ -4,7 +4,7 @@
 //! `Canvas`, `NodeKind::SkImage`) is a separate, still-unimplemented path —
 //! `@sc/ui` doesn't currently use it (see the shim-coverage audit).
 //!
-//! Same background-tokio-runtime + mpsc-channel shape as `live_data.rs`, but
+//! Same background-tokio-runtime + mpsc-channel shape as `async_bridge.rs`, but
 //! keyed by `NodeId` instead of an ad hoc callback id, and delivering raw
 //! bytes rather than JSON: `skia_safe::Image` wraps a ref-counted native
 //! handle that isn't safe to construct or move across threads without care,
@@ -76,7 +76,7 @@ async fn fetch(url: &str) -> Result<Vec<u8>, String> {
 }
 
 /// Decodes whatever finished since the last call — called once per frame
-/// from rn-linux, same pattern as `live_data::deliver`. `None` for a
+/// from rn-linux, same pattern as `async_bridge::deliver`. `None` for a
 /// genuinely undecodable response (corrupt data, unsupported format), not
 /// just "still loading" (those never appear here at all until they finish).
 pub fn drain_ready() -> Vec<(NodeId, Option<Image>)> {

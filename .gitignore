@@ -1,7 +1,11 @@
 # Rust
 /target/
 crates/*/target/
+examples/**/target/
+e2e/target/
 
-# JS (js/) — built via `pnpm build`, not committed
+# JS — built via `pnpm build`, not committed
 js/node_modules/
 js/dist/
+examples/**/node_modules/
+examples/**/dist/

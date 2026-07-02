@@ -1,6 +1,16 @@
 [workspace]
 resolver = "2"
 members = ["crates/skia-desktop", "crates/rn-linux", "crates/js-host"]
+# `examples/` and `e2e/` are each their OWN nested Cargo workspace (own
+# `[workspace]` table, own Cargo.lock) — this root workspace's `members` list
+# is already explicit (never a glob), so neither could be swept in by
+# accident, but `exclude` documents the boundary unmistakably and future-
+# proofs against `members` ever switching to a `crates/*`-style glob. This
+# is THE mechanism that keeps `cargo build`/`cargo test` at the repo root
+# 100% free of `sc-rn` (a genuinely separate git repo's crate) — see
+# examples/soundcloud/Cargo.toml and e2e/Cargo.toml for where that
+# cross-repo dependency actually lives.
+exclude = ["examples", "e2e"]
 
 [workspace.package]
 edition = "2021"
@@ -8,10 +18,3 @@ license = "MIT"
 
 [profile.release]
 lto = true
-
-# sc-rn: plain sibling-repo path dep for now, not the git+[patch] pattern
-# Desktop/app and Mobile/app use (see Core/CLAUDE.md) — that pattern needs
-# Core's remote to actually have this crate pushed, and right now Core's
-# GitHub repo is stuck at its very first commit with everything else (this
-# crate included) sitting uncommitted in the local working tree. Switch back
-# to git+[patch] once Core commits/pushes shared/crates/sc-rn for real.

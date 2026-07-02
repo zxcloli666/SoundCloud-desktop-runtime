@@ -143,8 +143,8 @@ impl ApplicationHandler for App {
                 self.hermes.eval(TICK_JS).expect("reanimated tick failed");
                 // Spike 7b: resolve/reject whatever sc-rn calls finished on
                 // the background tokio runtime since last frame. See
-                // js-host/src/live_data.rs and js/src/live-data.ts.
-                js_host::live_data::deliver(&self.hermes);
+                // js-host/src/async_bridge.rs and js/src/live-data.ts.
+                js_host::async_bridge::deliver(&self.hermes);
 
                 let (width, height): (u32, u32) = gpu.window.inner_size().into();
                 js_host::host::with_scene(|scene| {
@@ -160,7 +160,7 @@ impl ApplicationHandler for App {
                 self.hermes.eval(DISPATCH_LAYOUT_JS).expect("dispatch layout changes failed");
 
                 // `<Image>` fetch+decode (js-host/src/image_cache.rs) —
-                // same per-frame drain shape as live_data::deliver, but pure
+                // same per-frame drain shape as async_bridge::deliver, but pure
                 // Rust: no JS involved, so no reentrancy concern nesting it
                 // with the draw call below.
                 for (id, image) in js_host::image_cache::drain_ready() {
