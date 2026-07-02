@@ -53,9 +53,24 @@ export const Text = React.forwardRef<number, Props>((props, ref) =>
 
 // No asset-decoding pipeline yet (spike 7+ follow-up) — renders as an empty
 // box sized/styled like the real component so layouts don't collapse.
-export const Image = React.forwardRef<number, Props & { source?: unknown; resizeMode?: 'cover' | 'contain' | 'stretch' | 'center' | 'repeat' }>((props, ref) => {
-  const { source: _source, resizeMode: _resizeMode, ...rest } = props;
-  return React.createElement('View', { ...rest, ref });
+type ImageSource = { uri?: string | null } | number | null | undefined;
+type ImageResizeMode = 'cover' | 'contain' | 'stretch' | 'center' | 'repeat';
+
+// A real fetch+decode (image_cache.rs), not an empty box — `source`/
+// `resizeMode` fold into `style` as `imageUri`/`imageResizeMode` (same
+// synthetic-style-key trick `ScrollView` uses for `scrollable`), since
+// that's the channel `__scSetStyle` already has to the Rust Scene. Only
+// `source={{ uri }}` (what `@sc/ui` always uses) is handled — a bundler-
+// resolved local asset (`source={number}`) has no equivalent here, there's
+// no asset-bundling pipeline in this runtime.
+export const Image = React.forwardRef<number, Props & { source?: ImageSource; resizeMode?: ImageResizeMode }>((props, ref) => {
+  const { source, resizeMode, style, ...rest } = props;
+  const uri = source && typeof source === 'object' ? source.uri : undefined;
+  return React.createElement('View', {
+    ...rest,
+    style: [style, uri ? { imageUri: uri, imageResizeMode: resizeMode ?? 'cover' } : null],
+    ref,
+  });
 });
 
 type PressableProps = Props & {

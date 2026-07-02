@@ -5,6 +5,7 @@
 
 pub mod dto_json;
 pub mod host;
+pub mod image_cache;
 pub mod live_data;
 pub mod scene;
 
@@ -748,5 +749,62 @@ mod live_data_test {
         assert!(done2, "home_clusters() should have resolved or rejected within 5s, not hung");
 
         std::fs::remove_dir_all(&tmp).ok();
+    }
+}
+
+/// Real network fetch + real Skia decode for `<Image>` (task #20) — same
+/// "hit a real external endpoint, poll like rn-linux's render loop does"
+/// approach as `live_data_test` (no test-only shortcut, no mock server).
+#[cfg(test)]
+mod image_cache_test {
+    use std::thread::sleep;
+    use std::time::Duration;
+
+    use crate::scene::NodeId;
+
+    fn wait_for_result(id: NodeId) -> Option<skia_safe::Image> {
+        for _ in 0..200 {
+            for (ready_id, image) in super::image_cache::drain_ready() {
+                if ready_id == id {
+                    return image;
+                }
+            }
+            sleep(Duration::from_millis(25));
+        }
+        panic!("image fetch for node {id} did not complete within 5s");
+    }
+
+    // `image_cache`'s state is process-global, keyed by bare NodeId — the
+    // demo bundle (`bundle_test`) now fetches real images too, on whatever
+    // small, sequentially-allocated ids its own Scene happens to assign.
+    // Distinctive, out-of-range ids here avoid the exact class of collision
+    // `live_data_test` hit earlier (see its callback-id comment).
+
+    #[test]
+    fn fetches_and_decodes_a_real_image() {
+        let id: NodeId = 200_001;
+        super::image_cache::request(id, "https://picsum.photos/id/237/200/200.jpg".to_string());
+        let image = wait_for_result(id).expect("a real, reachable JPEG URL should decode successfully");
+        assert!(image.width() > 0 && image.height() > 0, "decoded image should have real dimensions");
+    }
+
+    #[test]
+    fn a_bad_url_resolves_to_no_image_rather_than_hanging_or_panicking() {
+        let id: NodeId = 200_002;
+        super::image_cache::request(id, "https://picsum.photos/id/237/200/200.jpg/this-path-does-not-exist-404".to_string());
+        assert!(wait_for_result(id).is_none(), "a 404 should decode to nothing, not panic the render loop");
+    }
+
+    #[test]
+    fn requesting_the_same_url_twice_for_the_same_node_is_a_no_op() {
+        // Only meaningfully testable by absence of a crash/hang — `request`
+        // is fire-and-forget, so a duplicate call spawning a second fetch
+        // wouldn't be directly observable here either way, but it
+        // shouldn't panic (e.g. on a poisoned lock from reentrant use).
+        let id: NodeId = 200_003;
+        let url = "https://picsum.photos/id/1/100/100.jpg".to_string();
+        super::image_cache::request(id, url.clone());
+        super::image_cache::request(id, url);
+        assert!(wait_for_result(id).is_some());
     }
 }

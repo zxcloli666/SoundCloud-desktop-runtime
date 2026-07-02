@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 ordered-float = "4"
+reqwest = "0.13.4"
 # Fork, not upstream: patches a genuine cmake-rs generator bug that blocks
 # Windows builds (libhermes-sys passed "-G Ninja" as a raw configure_arg
 # instead of Config::generator("Ninja"), so cmake-rs's MSVC branch still

@@ -159,6 +159,14 @@ impl ApplicationHandler for App {
                 // other reactive update in this render loop.
                 self.hermes.eval(DISPATCH_LAYOUT_JS).expect("dispatch layout changes failed");
 
+                // `<Image>` fetch+decode (js-host/src/image_cache.rs) —
+                // same per-frame drain shape as live_data::deliver, but pure
+                // Rust: no JS involved, so no reentrancy concern nesting it
+                // with the draw call below.
+                for (id, image) in js_host::image_cache::drain_ready() {
+                    js_host::host::with_scene(|scene| scene.set_image(id, image));
+                }
+
                 js_host::host::with_scene(|scene| {
                     scene.draw(gpu.canvas());
                 });

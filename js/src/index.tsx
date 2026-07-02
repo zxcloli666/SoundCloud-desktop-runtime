@@ -127,7 +127,9 @@ function CoreUiProbe() {
     <View style={{ gap: 12, margin: 16 }}>
       <SectionHeader kicker="Проверка" title="Core/ui блоки" />
       <View style={{ flexDirection: 'row', gap: 12, alignItems: 'center' }}>
-        <Avatar url={null} size={56} ring />
+        {/* Real fetch+decode (task #20) — previously an empty box regardless
+            of url. */}
+        <Avatar url="https://picsum.photos/id/64/200/200.jpg" size={56} ring />
         <Button label="Слушать" onPress={() => {}} />
       </View>
       {/* Deliberately long title/subtitle — exercises numberOfLines={1}
@@ -135,6 +137,7 @@ function CoreUiProbe() {
       <Card
         title="Очень длинное название трека, которое точно не влезет"
         subtitle="Очень длинное имя артиста, тоже не влезающее в карточку"
+        artworkUrl="https://picsum.photos/id/237/200/200.jpg"
         width={140}
         onPress={() => {}}
       />

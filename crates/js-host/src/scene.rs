@@ -21,9 +21,13 @@ use serde::Deserialize;
 use serde_json::Value as Json;
 use skia_safe::{
     BlendMode, BlurStyle, Canvas, Color4f, Font, FontMgr, FontStyle, MaskFilter, Paint, PaintStyle,
-    Point, RRect, Rect, Shader, TileMode, Typeface, Vector, canvas::SaveLayerRec, gradient, image_filters,
+    Point, RRect, Rect, Shader, TileMode, Typeface, Vector,
+    canvas::{SaveLayerRec, SrcRectConstraint},
+    gradient, image_filters,
 };
 use yoga::{Align, Direction, Edge, FlexDirection, Justify, MeasureMode, Node as YogaNode, PositionType, Size as YogaSize, StyleUnit, Wrap};
+
+use crate::image_cache;
 
 thread_local! {
     // The system default typeface is somewhat expensive to resolve (font
@@ -191,6 +195,23 @@ struct LayoutPaint {
     /// round-tripped through JS state for every wheel tick. Zero for every
     /// node that was never registered via `Scene::set_scrollable`.
     scroll_offset: (f32, f32),
+    /// The plain (non-Skia) `<Image source={{uri}}>` this node currently
+    /// wants drawn — `image_url` tracks what was last *requested* (may
+    /// still be in flight), `image` is the actual decoded bitmap once
+    /// `image_cache::drain_ready()` delivers it (`None` while loading or on
+    /// a failed/undecodable fetch — same as real RN showing nothing yet).
+    image_url: Option<String>,
+    image: Option<skia_safe::Image>,
+    image_resize_mode: ImageResizeMode,
+}
+
+#[derive(Clone, Copy, Default, PartialEq)]
+enum ImageResizeMode {
+    #[default]
+    Cover,
+    Contain,
+    Stretch,
+    Center,
 }
 
 /// RN's iOS-style View shadow (`shadowColor`/`shadowOpacity`/`shadowRadius`/
@@ -377,6 +398,14 @@ pub struct StyleInput {
     /// re-render might stop being a ScrollView.
     pub scrollable: Option<bool>,
     pub scroll_horizontal: Option<bool>,
+
+    /// Set by `<Image source={{uri}}>` (`react-native.tsx`) — an actual
+    /// fetch+decode (`image_cache.rs`), not the empty box it used to be.
+    /// Same convention as every other optional style field here: `None`
+    /// (key absent from *this* flattened style) leaves whatever image was
+    /// already showing untouched, rather than clearing it.
+    pub image_uri: Option<String>,
+    pub image_resize_mode: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -497,6 +526,7 @@ impl Scene {
         self.watched_layouts.remove(&child);
         self.pressable_nodes.remove(&child);
         self.scrollable_nodes.remove(&child);
+        image_cache::forget(child);
     }
 
     /// Registers `id` for `onLayout` reporting — `drain_layout_changes()`
@@ -728,6 +758,21 @@ impl Scene {
             }
             None => {}
         }
+        if let Some(mode) = style.image_resize_mode.as_deref() {
+            node.paint.image_resize_mode = match mode {
+                "contain" => ImageResizeMode::Contain,
+                "stretch" => ImageResizeMode::Stretch,
+                "center" => ImageResizeMode::Center,
+                _ => ImageResizeMode::Cover,
+            };
+        }
+        if let Some(uri) = &style.image_uri {
+            if node.paint.image_url.as_deref() != Some(uri.as_str()) {
+                node.paint.image_url = Some(uri.clone());
+                node.paint.image = None;
+                image_cache::request(id, uri.clone());
+            }
+        }
 
         let Some(yoga) = node.yoga.as_mut() else {
             return;
@@ -896,6 +941,15 @@ impl Scene {
         self.nodes.get(&id).expect("unknown node id").borrow_mut().props = props;
     }
 
+    /// Applies a decoded (or failed — `None`) `<Image>` fetch —
+    /// `image_cache::drain_ready()`, polled once per frame from rn-linux.
+    /// A no-op if `id` was since unmounted (the fetch can outlive it).
+    pub fn set_image(&mut self, id: NodeId, image: Option<skia_safe::Image>) {
+        if let Some(cell) = self.nodes.get(&id) {
+            cell.borrow_mut().paint.image = image;
+        }
+    }
+
     pub fn set_root(&mut self, id: NodeId) {
         self.root = Some(id);
     }
@@ -961,7 +1015,7 @@ impl Scene {
     }
 
     fn draw_layout_node(&self, id: NodeId, parent_x: f32, parent_y: f32, canvas: &Canvas) {
-        let (x, y, w, h, text, is_canvas, children, background, opacity, overflow_hidden, radii, border_width, border_color, shadow, parent, scroll_offset) = {
+        let (x, y, w, h, text, is_canvas, children, background, opacity, overflow_hidden, radii, border_width, border_color, shadow, parent, scroll_offset, image, image_resize_mode) = {
             let node = self.nodes.get(&id).expect("unknown node id").borrow();
             let yoga = node.yoga.as_ref().expect("draw_layout_node on a non-layout node");
             let x = parent_x + yoga.get_layout_left();
@@ -990,6 +1044,8 @@ impl Scene {
                 node.paint.shadow,
                 node.parent,
                 node.paint.scroll_offset,
+                node.paint.image.clone(),
+                node.paint.image_resize_mode,
             )
         };
 
@@ -1021,6 +1077,18 @@ impl Scene {
             let mut paint = Paint::new(Color4f::new(r, g, b, a), None);
             paint.set_anti_alias(true);
             canvas.draw_rrect(radii.rrect(rect), &paint);
+        }
+
+        // `<Image>` (react-native.tsx) is its own plain View node — same
+        // rrect clip as the background fill above (this node's own
+        // border-radius, not just whatever `overflow: hidden` its *parent*
+        // applies), scoped to a local save/restore so it doesn't also clip
+        // the border stroke or children drawn further down.
+        if let Some(image) = &image {
+            canvas.save();
+            canvas.clip_rrect(radii.rrect(rect), None, Some(true));
+            draw_resized_image(canvas, image, rect, image_resize_mode);
+            canvas.restore();
         }
 
         if border_width > 0.0 {
@@ -1287,6 +1355,63 @@ impl Scene {
         paint.set_anti_alias(true);
         paint.set_image_filter(filter);
         canvas.draw_rrect(*rrect, &paint);
+    }
+}
+
+/// Draws a decoded `<Image>` into `dst`, matching RN's `resizeMode`:
+/// `cover` (default) scales to fill `dst`, cropping overflow; `contain`
+/// scales to fit entirely inside `dst`, letterboxing; `stretch` ignores
+/// aspect ratio; `center` draws at natural size, centered (cropped if
+/// bigger than `dst`, not scaled). `repeat` isn't implemented — `@sc/ui`
+/// never uses it — and falls back to `cover`.
+fn draw_resized_image(canvas: &Canvas, image: &skia_safe::Image, dst: Rect, mode: ImageResizeMode) {
+    let (image_w, image_h) = (image.width() as f32, image.height() as f32);
+    if image_w <= 0.0 || image_h <= 0.0 || dst.width() <= 0.0 || dst.height() <= 0.0 {
+        return;
+    }
+    let paint = Paint::default();
+    match mode {
+        ImageResizeMode::Stretch => {
+            canvas.draw_image_rect(image, None, dst, &paint);
+        }
+        ImageResizeMode::Cover => {
+            let src = cover_src_rect(image_w, image_h, dst.width(), dst.height());
+            canvas.draw_image_rect(image, Some((&src, SrcRectConstraint::Strict)), dst, &paint);
+        }
+        ImageResizeMode::Contain => {
+            let scale = (dst.width() / image_w).min(dst.height() / image_h);
+            let (draw_w, draw_h) = (image_w * scale, image_h * scale);
+            let inset = Rect::from_xywh(
+                dst.left + (dst.width() - draw_w) * 0.5,
+                dst.top + (dst.height() - draw_h) * 0.5,
+                draw_w,
+                draw_h,
+            );
+            canvas.draw_image_rect(image, None, inset, &paint);
+        }
+        ImageResizeMode::Center => {
+            let inset = Rect::from_xywh(
+                dst.left + (dst.width() - image_w) * 0.5,
+                dst.top + (dst.height() - image_h) * 0.5,
+                image_w,
+                image_h,
+            );
+            canvas.draw_image_rect(image, None, inset, &paint);
+        }
+    }
+}
+
+/// The source crop rect (in image-pixel space) for `resizeMode: "cover"` —
+/// scale to fill `dst_w`x`dst_h`, cropping whichever axis overflows.
+fn cover_src_rect(image_w: f32, image_h: f32, dst_w: f32, dst_h: f32) -> Rect {
+    let image_aspect = image_w / image_h;
+    let dst_aspect = dst_w / dst_h;
+    if image_aspect > dst_aspect {
+        let crop_w = image_h * dst_aspect;
+        Rect::from_xywh((image_w - crop_w) * 0.5, 0.0, crop_w, image_h)
+    } else {
+        let crop_h = image_w / dst_aspect;
+        Rect::from_xywh(0.0, (image_h - crop_h) * 0.5, image_w, crop_h)
     }
 }
 
