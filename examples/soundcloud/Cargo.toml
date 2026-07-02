@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/sc-desktop-ops"]
+members = ["crates/sc-desktop-ops", "crates/sc-desktop-example"]
 
 [workspace.package]
 edition = "2021"
