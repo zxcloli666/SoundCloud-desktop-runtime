@@ -4,15 +4,21 @@
 // default binary runs (`cargo run -p rn-linux`, after `pnpm build` here)
 // with nothing but Desktop-Runtime on disk, and what the engine's own
 // `js-host` tests (`tests/playground_bundle.rs`, `tests/reanimated.rs`,
-// `tests/arbitrary_aspect_ratio.rs`) mount instead of a real `@sc/ui`
-// bundle — see Desktop-Runtime/CLAUDE.md, "Спайк 8".
+// `tests/arbitrary_aspect_ratio.rs`) mount instead of a real `@sc/ui` bundle.
 import React from 'react';
 import Reconciler from 'react-reconciler';
 import { ConcurrentRoot } from 'react-reconciler/constants';
 
 import { hostConfig } from '../../src/hostConfig';
-import { Pressable, ScrollView, Text, View } from 'react-native';
+import { Image, Pressable, ScrollView, Text, View } from 'react-native';
 import { Animated, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
+// esbuild's `dataurl` loader (build-support.mjs's `imageAssetLoaders`)
+// turns this into a `data:image/png;base64,...` string at build time —
+// exactly what a real `require('./photo.png')` resolves to on this
+// runtime. `tests/playground_bundle.rs` decodes it back through the real
+// pipeline (Image -> image_cache.rs -> Skia) to prove it end to end.
+// @ts-expect-error -- no bundler type declarations for raw asset imports
+import testAsset from './test-asset.png';
 
 type Container = { rootId: number | null };
 interface RealReconciler {
@@ -50,6 +56,14 @@ function PressableTile({ label }: { label: string }) {
       <Text style={{ color: [1, 1, 1, 1], margin: 4 }}>{label}</Text>
     </Pressable>
   );
+}
+
+// A `require()`d local image, proven end to end: `testAsset` is the
+// build-time `data:image/png;base64,...` string (see the import above),
+// `tests/playground_bundle.rs` finds this node by its position/size and
+// decodes its rendered pixels back through image_cache.rs -> Skia.
+function RequiredAssetTile() {
+  return <Image source={testAsset} style={{ width: 20, height: 20, margin: 8 }} />;
 }
 
 // Deliberately reproduces the exact column-outer/row-inner nesting shape
@@ -95,6 +109,7 @@ function App() {
       <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
         <PressableTile label="A" />
         <PressableTile label="B" />
+        <RequiredAssetTile />
       </View>
       <OverflowCarousel />
       {/* PulseBox stays last — tests/reanimated.rs finds it via

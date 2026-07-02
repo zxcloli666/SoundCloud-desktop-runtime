@@ -51,21 +51,23 @@ export const Text = React.forwardRef<number, Props>((props, ref) =>
   React.createElement('View', { ...props, ref }, props.children as React.ReactNode),
 );
 
-// Numeric require()'d assets have no decoding pipeline — renders as an
-// empty box sized/styled like the real component so layouts don't collapse.
-type ImageSource = { uri?: string | null } | number | null | undefined;
+// `require('./photo.png')`/`import photo from './photo.png'` resolve to a
+// `data:` URI string directly — js/build-support.mjs's `imageAssetLoaders()`
+// maps image extensions to esbuild's built-in `dataurl` loader, embedding
+// the file into the bundle at build time (no separate asset server needed
+// on this desktop runtime, unlike Metro's numeric-asset-ID registry on
+// mobile). A bare string source is therefore just as real as `{ uri }`.
+type ImageSource = { uri?: string | null } | string | null | undefined;
 type ImageResizeMode = 'cover' | 'contain' | 'stretch' | 'center' | 'repeat';
 
-// A real fetch+decode (image_cache.rs), not an empty box — `source`/
-// `resizeMode` fold into `style` as `imageUri`/`imageResizeMode` (same
-// synthetic-style-key trick `ScrollView` uses for `scrollable`), since
-// that's the channel `__scSetStyle` already has to the Rust Scene. Only
-// `source={{ uri }}` (what `@sc/ui` always uses) is handled — a bundler-
-// resolved local asset (`source={number}`) has no equivalent here, there's
-// no asset-bundling pipeline in this runtime.
+// A real fetch+decode (image_cache.rs) either way — `source`/`resizeMode`
+// fold into `style` as `imageUri`/`imageResizeMode` (same synthetic-style-
+// key trick `ScrollView` uses for `scrollable`), since that's the channel
+// `__scSetStyle` already has to the Rust Scene. `image_cache.rs`'s `fetch`
+// decodes a `data:` URI locally instead of issuing a network request.
 export const Image = React.forwardRef<number, Props & { source?: ImageSource; resizeMode?: ImageResizeMode }>((props, ref) => {
   const { source, resizeMode, style, ...rest } = props;
-  const uri = source && typeof source === 'object' ? source.uri : undefined;
+  const uri = typeof source === 'string' ? source : (source?.uri ?? undefined);
   return React.createElement('View', {
     ...rest,
     style: [style, uri ? { imageUri: uri, imageResizeMode: resizeMode ?? 'cover' } : null],

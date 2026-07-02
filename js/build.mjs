@@ -1,6 +1,6 @@
 import * as esbuild from 'esbuild';
 
-import { patchHermesForOfBug, shimAliases } from './build-support.mjs';
+import { imageAssetLoaders, patchHermesForOfBug, shimAliases } from './build-support.mjs';
 
 // IIFE, not ESM/CJS — Hermes has no module loader, it just runs a script.
 // NODE_ENV is `--define`d (not a real `process.env`) so esbuild's own dead-code
@@ -20,6 +20,7 @@ await esbuild.build({
   jsx: 'automatic',
   define: { 'process.env.NODE_ENV': '"development"' },
   alias: shimAliases(),
+  loader: imageAssetLoaders(),
 });
 
 // See build-support.mjs's `patchHermesForOfBug` doc comment for the full

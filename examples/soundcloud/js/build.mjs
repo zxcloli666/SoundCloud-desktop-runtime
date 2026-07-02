@@ -1,6 +1,6 @@
 import * as esbuild from 'esbuild';
 
-import { patchHermesForOfBug, shimAliases } from '../../../js/build-support.mjs';
+import { imageAssetLoaders, patchHermesForOfBug, shimAliases } from '../../../js/build-support.mjs';
 
 // Same shape as the engine's own js/build.mjs — see its comments for why
 // (IIFE/no module loader, NODE_ENV `--define`d not real, alias trick).
@@ -20,12 +20,13 @@ await esbuild.build({
   jsx: 'automatic',
   define: { 'process.env.NODE_ENV': '"development"' },
   alias: shimAliases(),
+  loader: imageAssetLoaders(),
 });
 
 // `required: true` (default) — this bundle imports named exports from
 // `react` via `@sc/ui`'s `ThemeProvider.tsx`, which is known to trigger the
-// Hermes engine bug (Desktop-Runtime/CLAUDE.md, spike 7a) — a missing match
-// here is a real regression, not just an absent edge case.
+// Hermes engine bug (see docs/pitfalls/hermes-engine-bugs.md) — a missing
+// match here is a real regression, not just an absent edge case.
 patchHermesForOfBug('dist/bundle.js');
 
 console.log('built dist/bundle.js (patched __copyProps for a Hermes for-of/let engine bug)');

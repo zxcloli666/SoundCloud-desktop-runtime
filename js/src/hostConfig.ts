@@ -7,6 +7,7 @@ declare const __scCreateText: (text: string) => number;
 declare const __scSetText: (id: number, text: string) => void;
 declare const __scCreateSkNode: (kind: string) => number;
 declare const __scAppendChild: (parent: number, child: number) => void;
+declare const __scInsertBefore: (parent: number, child: number, beforeChild: number) => void;
 declare const __scRemoveChild: (parent: number, child: number) => void;
 declare const __scSetStyle: (id: number, styleJson: string) => void;
 declare const __scSetSkProps: (id: number, propsJson: string) => void;
@@ -350,9 +351,8 @@ export const hostConfig = {
     __scSetRoot(child);
   },
 
-  insertBefore(parent: Instance, child: Instance, _beforeChild: Instance): void {
-    // Scene only supports append, no explicit reordering yet.
-    __scAppendChild(parent, child);
+  insertBefore(parent: Instance, child: Instance, beforeChild: Instance): void {
+    __scInsertBefore(parent, child, beforeChild);
   },
 
   insertInContainerBefore(container: Container, child: Instance): void {

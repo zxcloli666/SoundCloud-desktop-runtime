@@ -19,6 +19,22 @@ export function shimAliases(engineJsDir = new URL('.', import.meta.url).pathname
   };
 }
 
+// `require('./photo.png')`/`import photo from './photo.png'` — esbuild's
+// built-in `dataurl` loader embeds the file as a base64 `data:` URI string
+// at build time, no separate asset server needed (unlike Metro's numeric-
+// asset-ID registry on mobile). `react-native.tsx`'s `<Image>` accepts that
+// string directly, and `image_cache.rs`'s `fetch` decodes a `data:` URI
+// locally instead of issuing a network request.
+export function imageAssetLoaders() {
+  return {
+    '.png': 'dataurl',
+    '.jpg': 'dataurl',
+    '.jpeg': 'dataurl',
+    '.gif': 'dataurl',
+    '.webp': 'dataurl',
+  };
+}
+
 // Hermes engine bug (reproduced in isolation, unrelated to our code): a
 // `for (let key of ...)` loop whose body defines a closure via
 // `Object.defineProperty` doesn't get a fresh `key` binding per iteration —

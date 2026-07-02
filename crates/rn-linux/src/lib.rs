@@ -32,7 +32,7 @@ pub struct RunConfig {
     pub bundle_path: PathBuf,
     pub window_title: String,
     pub initial_size: (f64, f64),
-    /// Runs once, right after the engine's own 15 generic host ops are
+    /// Runs once, right after the engine's own 16 generic host ops are
     /// registered but before `bundle_path` is read/eval'd — the seam for a
     /// consumer to register additional `js_host::hermes_op` plugins (e.g.
     /// SoundCloud-specific ones) and run whatever one-time init they need

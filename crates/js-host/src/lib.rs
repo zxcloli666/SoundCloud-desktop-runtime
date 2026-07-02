@@ -73,5 +73,11 @@ mod hit_test_test;
 #[path = "tests/scroll.rs"]
 mod scroll_test;
 #[cfg(test)]
+#[path = "tests/reorder.rs"]
+mod reorder_test;
+#[cfg(test)]
 #[path = "tests/image_cache.rs"]
 mod image_cache_test;
+#[cfg(test)]
+#[path = "tests/image_resize_mode.rs"]
+mod image_resize_mode_test;

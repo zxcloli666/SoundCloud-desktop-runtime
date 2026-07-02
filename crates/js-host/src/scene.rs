@@ -20,8 +20,8 @@ use ordered_float::OrderedFloat;
 use serde::Deserialize;
 use serde_json::Value as Json;
 use skia_safe::{
-    BlendMode, BlurStyle, Canvas, Color4f, Font, FontMgr, FontStyle, MaskFilter, Paint, PaintStyle,
-    Point, RRect, Rect, Shader, TileMode, Typeface, Vector,
+    BlendMode, BlurStyle, Canvas, Color4f, Font, FontMgr, FontStyle, MaskFilter, Matrix, Paint,
+    PaintStyle, Point, RRect, Rect, SamplingOptions, Shader, TileMode, Typeface, Vector,
     canvas::{SaveLayerRec, SrcRectConstraint},
     gradient, image_filters,
 };
@@ -212,6 +212,7 @@ enum ImageResizeMode {
     Contain,
     Stretch,
     Center,
+    Repeat,
 }
 
 /// RN's iOS-style View shadow (`shadowColor`/`shadowOpacity`/`shadowRadius`/
@@ -514,6 +515,33 @@ impl Scene {
         child_node.parent = Some(parent);
     }
 
+    /// Reorders `child` to sit right before `before_child` among `parent`'s
+    /// children — used for both fresh inserts at a specific position and
+    /// moving an already-mounted child (keyed-list reordering). If `child`
+    /// is already a child of `parent`, it's detached from its current
+    /// position first (in both our own list and Yoga's), so it never ends
+    /// up listed twice.
+    pub fn insert_child_before(&mut self, parent: NodeId, child: NodeId, before_child: NodeId) {
+        let parent_cell = self.nodes.get(&parent).expect("unknown parent id");
+        let child_cell = self.nodes.get(&child).expect("unknown child id");
+        let mut parent_node = parent_cell.borrow_mut();
+        let mut child_node = child_cell.borrow_mut();
+
+        if let Some(old_index) = parent_node.children.iter().position(|id| *id == child) {
+            parent_node.children.remove(old_index);
+            if let (Some(py), Some(cy)) = (parent_node.yoga.as_mut(), child_node.yoga.as_mut()) {
+                py.remove_child(cy);
+            }
+        }
+
+        let index = parent_node.children.iter().position(|id| *id == before_child).unwrap_or(parent_node.children.len());
+        if let (Some(py), Some(cy)) = (parent_node.yoga.as_mut(), child_node.yoga.as_mut()) {
+            py.insert_child(cy, index);
+        }
+        parent_node.children.insert(index, child);
+        child_node.parent = Some(parent);
+    }
+
     pub fn remove_child(&mut self, parent: NodeId, child: NodeId) {
         let parent_cell = self.nodes.get(&parent).expect("unknown parent id");
         let child_cell = self.nodes.get(&child).expect("unknown child id");
@@ -763,6 +791,7 @@ impl Scene {
                 "contain" => ImageResizeMode::Contain,
                 "stretch" => ImageResizeMode::Stretch,
                 "center" => ImageResizeMode::Center,
+                "repeat" => ImageResizeMode::Repeat,
                 _ => ImageResizeMode::Cover,
             };
         }
@@ -1362,8 +1391,8 @@ impl Scene {
 /// `cover` (default) scales to fill `dst`, cropping overflow; `contain`
 /// scales to fit entirely inside `dst`, letterboxing; `stretch` ignores
 /// aspect ratio; `center` draws at natural size, centered (cropped if
-/// bigger than `dst`, not scaled). `repeat` isn't implemented — `@sc/ui`
-/// never uses it — and falls back to `cover`.
+/// bigger than `dst`, not scaled); `repeat` tiles at the image's natural
+/// pixel size, anchored to `dst`'s own top-left corner.
 fn draw_resized_image(canvas: &Canvas, image: &skia_safe::Image, dst: Rect, mode: ImageResizeMode) {
     let (image_w, image_h) = (image.width() as f32, image.height() as f32);
     if image_w <= 0.0 || image_h <= 0.0 || dst.width() <= 0.0 || dst.height() <= 0.0 {
@@ -1397,6 +1426,18 @@ fn draw_resized_image(canvas: &Canvas, image: &skia_safe::Image, dst: Rect, mode
                 image_h,
             );
             canvas.draw_image_rect(image, None, inset, &paint);
+        }
+        ImageResizeMode::Repeat => {
+            // Tiling shader in image-pixel space, translated so the first
+            // tile starts at dst's own top-left corner — otherwise tiles
+            // would align to the canvas origin, drifting out of phase with
+            // dst whenever it isn't at (0, 0).
+            let local_matrix = Matrix::translate((dst.left, dst.top));
+            if let Some(shader) = image.to_shader((TileMode::Repeat, TileMode::Repeat), SamplingOptions::default(), &local_matrix) {
+                let mut tiled_paint = Paint::default();
+                tiled_paint.set_shader(shader);
+                canvas.draw_rect(dst, &tiled_paint);
+            }
         }
     }
 }

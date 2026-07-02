@@ -52,6 +52,11 @@ fn append_child(parent: u32, child: u32) {
     SCENE.with(|s| s.borrow_mut().append_child(parent, child));
 }
 
+#[hermes_op(name = "__scInsertBefore")]
+fn insert_before(parent: u32, child: u32, before_child: u32) {
+    SCENE.with(|s| s.borrow_mut().insert_child_before(parent, child, before_child));
+}
+
 #[hermes_op(name = "__scRemoveChild")]
 fn remove_child(parent: u32, child: u32) {
     SCENE.with(|s| s.borrow_mut().remove_child(parent, child));
@@ -176,7 +181,7 @@ globalThis.console = {
 };
 "#;
 
-/// Registers the 15 generic ops every consumer of this engine needs —
+/// Registers the 16 generic ops every consumer of this engine needs —
 /// nothing here ever touches `sc-rn`/`@sc/ui`. A consumer that wants
 /// SoundCloud-specific ops too (live auth/home/wave/etc.) layers them on top
 /// by calling their own plugin crate's `install(rt)` afterwards — see
@@ -188,6 +193,7 @@ pub fn install(rt: &Runtime) -> rusty_hermes::Result<()> {
     create_sk_node::register(rt)?;
     set_sk_props::register(rt)?;
     append_child::register(rt)?;
+    insert_before::register(rt)?;
     remove_child::register(rt)?;
     set_style::register(rt)?;
     set_root::register(rt)?;
