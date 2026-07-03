@@ -70,6 +70,15 @@ jobs:
           mkdir -p registry-index crate-output
           cp ops/cargo-registry/config.json registry-index/config.json
 
+      # Without this, every run starts registry-index/ empty, so
+      # publish-crate.mjs's own "already indexed — skipping" check never
+      # fires and every crate gets re-packaged even when its version
+      # didn't change — see seed-live-index.mjs's own comment for why
+      # that silently corrupts unchanged crates' checksums.
+      - name: Seed registry-index from the live site
+        run: |
+          node ops/cargo-registry/seed-live-index.mjs https://zxcloli666.github.io/SoundCloud-desktop-runtime/registry registry-index skia-desktop js-host rn-linux rn-windows
+
       - name: Start ephemeral local registry server
         # skia-desktop/js-host/rn-linux/rn-windows depend on each other —
         # the one published earlier in this same run needs to already resolve via
