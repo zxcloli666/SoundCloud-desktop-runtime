@@ -31,6 +31,73 @@ macOS через `react-native-macos` — использующее `@shopify/rea
 проверяется "твой Skia-код по-прежнему работает на Windows/Linux", а не
 просто заявляется — [`compat/README.md`](../compat/README.md).
 
+### Где это реально лежит в твоём ОДНОМ репо
+
+Rust/Cargo, `rn-linux` и `rn-windows` НЕ подтягиваются рядом со сборкой
+iOS/Android/macOS — там всё как сегодня: обычный React Native CLI и
+Metro. Desktop-Runtime появляется только в одной новой, добавочной папке:
+
+```
+my-app/                    твоё существующее RN-приложение — БЕЗ ИЗМЕНЕНИЙ
+  src/                     общие компоненты (View/Text/Canvas/...) — ОДНИ
+                           И ТЕ ЖЕ файлы для всех платформ ниже, мобилки и
+                           десктоп одинаково
+  index.js                 точка входа RN CLI (Metro) — мобилки/macOS
+  ios/  android/  macos/    обычные RN/react-native-macos проекты —
+                           не тронуты, никакого Cargo, никакого
+                           Desktop-Runtime
+  package.json             реальные зависимости твоего приложения:
+                           react-native / @shopify/react-native-skia /
+                           react-native-reanimated / react-native-macos
+
+  desktop/                 ЕДИНСТВЕННАЯ папка, которая вообще знает про
+                           Desktop-Runtime — всё выше этой строки его не
+                           замечает
+    js/
+      package.json         отдельный package.json: esbuild +
+                           @zxcloli666/desktop-runtime-js
+      build.mjs             резолвит react-native/etc в шимы (раздел 3
+                           ниже), собирает ../../src/index.tsx в
+                           dist/bundle.js — ОДИН бандл на Windows И Linux
+                           сразу (шимовый JS идентичен в обоих случаях,
+                           отличается только нативный хост)
+    Cargo.toml              свой собственный [workspace] — НЕ вложен ни в
+                           какой другой Rust-workspace, та же логика, что
+                           у собственного разделения examples/e2e в этом
+                           репо (docs/pitfalls/
+                           cross-repo-workspace-split.md): `cargo build`
+                           где-то ещё в твоём репо (если там есть Rust)
+                           никогда не заденет это
+    windows/
+      Cargo.toml            зависит от rn-windows (registry = "desktop-runtime")
+      src/main.rs           rn_linux::run(RunConfig { bundle_path: "../js/dist/bundle.js".into(), .. })
+    linux/
+      Cargo.toml            зависит от rn-linux (registry = "desktop-runtime")
+      src/main.rs           по структуре идентичен windows/src/main.rs —
+                           отличается только сам крейт-зависимость
+```
+
+Конкретно по платформам:
+
+- **iOS / Android**: `react-native run-ios` / `run-android` как обычно.
+  `desktop/` не видит вообще, `cargo` не запускается.
+- **macOS**: `react-native-macos` как обычно — та же история.
+- **Windows**: `cd desktop/js && pnpm build`, потом `cd desktop/windows &&
+  cargo build --release` (или это делает твой Windows-раннер в CI).
+  Подтягивает только `rn-windows` и его цепочку зависимостей —
+  `rn-linux` нигде не упоминается в `desktop/windows/Cargo.toml`, значит
+  на Windows-машине он никогда не соберётся.
+- **Linux**: то же самое, из `desktop/linux` — подтягивает `rn-linux`,
+  никогда `rn-windows`.
+
+`desktop/js/dist/bundle.js` собирается ОДИН РАЗ и используется и Windows-,
+и Linux-бинарём без изменений — шимовый JS (`react-native.tsx`/
+`rnskia.tsx`/`reanimated.tsx`/`hostConfig.ts`) — один и тот же файл в
+обоих случаях, пересобирать под каждую платформу отдельно нечего.
+Единственное, чем отличаются `desktop/windows` и `desktop/linux` — это
+какой ровно один крейт (`rn-windows` vs `rn-linux`) указан в их
+несколько-строчном `main.rs`.
+
 ## 1. Установка
 
 Rust-крейты и JS-пакет публикуются в собственные реестры этого репо — см.
