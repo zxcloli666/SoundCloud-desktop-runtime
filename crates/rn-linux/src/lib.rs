@@ -170,25 +170,27 @@ impl ApplicationHandler for App {
                     }
                 }
             }
+            // Not acting on wheel input at all while unfocused matches how
+            // most desktop apps behave — harmless even though it isn't what
+            // fixes the direction bug below.
             WindowEvent::MouseWheel { delta, .. } if self.focused => {
-                // Guarded on focus: winit still delivers wheel events to an
-                // unfocused window (nothing about pausing redraws above
-                // stops event delivery), and some X11/Wayland setups report
-                // an inverted delta sign for a background window — scroll
-                // down while unfocused, and it can come through as scroll
-                // up once acted on. Simplest robust fix: don't act on wheel
-                // input at all unless this window is actually focused,
-                // matching how most desktop apps already behave.
-                //
                 // `LineDelta` (most mice) is in "lines", not pixels — an
                 // arbitrary but reasonable-feeling multiplier, same idea as
                 // a browser's default wheel step. `PixelDelta` (trackpads)
                 // is already precise.
                 const LINE_HEIGHT_PX: f32 = 40.0;
-                let (dx, dy) = match delta {
+                let (raw_dx, raw_dy) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => (x * LINE_HEIGHT_PX, y * LINE_HEIGHT_PX),
                     MouseScrollDelta::PixelDelta(p) => (p.x as f32, p.y as f32),
                 };
+                // winit's own convention (MouseScrollDelta's doc comment):
+                // positive = content should move right/down, i.e. reveal
+                // what's left/up — "natural"/reverse-scroll semantics.
+                // `Scene::scroll_by`'s contract (see scroll_test.rs) is the
+                // opposite: positive = reveal what's further down/right.
+                // Without this negation, a normal mouse-wheel scroll-down
+                // moved content the wrong way.
+                let (dx, dy) = (-raw_dx, -raw_dy);
                 let (cx, cy) = self.cursor_pos;
                 let hit = js_host::host::with_scene(|scene| scene.hit_test_scrollable(cx, cy));
                 if let Some(id) = hit {
