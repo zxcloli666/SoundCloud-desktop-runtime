@@ -198,7 +198,7 @@ globalThis.console = {
 };
 "#;
 
-/// Registers the 17 generic ops every consumer of this engine needs —
+/// Registers the generic ops every consumer of this engine needs —
 /// nothing here ever touches `sc-rn`/`@sc/ui`. A consumer that wants
 /// SoundCloud-specific ops too (live auth/home/wave/etc.) layers them on top
 /// by calling their own plugin crate's `install(rt)` afterwards — see

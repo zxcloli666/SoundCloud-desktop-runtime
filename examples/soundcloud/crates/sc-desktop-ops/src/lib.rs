@@ -4,7 +4,7 @@
 //! the whole repo tree where `sc-rn` is reachable, and it plugs its ops in
 //! from the outside, the same way any third-party consumer of the engine
 //! would add their own: register more `js_host::hermes_op` functions on a
-//! `js_host::Runtime` that already has the 16 generic ops installed.
+//! `js_host::Runtime` that already has the engine's generic ops installed.
 //!
 //! `home_clusters`/`wave`/`resolve_tracks`/`me`/`auth_status` are async:
 //! they spawn onto `js_host::async_bridge`'s background runtime (generic —

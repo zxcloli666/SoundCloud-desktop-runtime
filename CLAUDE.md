@@ -46,7 +46,7 @@ Desktop-Runtime/          ДВИЖОК — корневой Cargo/pnpm workspace
                           SC-специфичных или иных внешних зависимостей
   crates/skia-desktop/   GPU-Skia surface (skia-safe + winit/glutin)
   crates/js-host/        Hermes-рантайм + сцена-дерево (реальная Yoga) +
-                         16 генерик host-функций для JS
+                         генерик host-функции для JS
   crates/rn-linux/       lib.rs (RunConfig/run — публичная библиотека,
                          платформо-агностичная) + тонкий main.rs: winit-окно
                          + event loop
