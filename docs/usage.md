@@ -9,13 +9,18 @@ Why this exists at all: [README.md](../README.md).)
 
 ```
 my-app/                    your existing React Native app — UNCHANGED
-  src/                     shared components — same files every platform renders
+  src/                     shared components (e.g. App.tsx) — same files
+                           every platform renders, no Desktop-Runtime import
+                           in sight
   index.js  ios/  android/  macos/  package.json    untouched, no Cargo
 
   desktop/                 NEW — the only folder that knows Desktop-Runtime exists
     js/
       package.json
-      build.mjs             builds ../../src/index.tsx -> dist/bundle.js
+      build.mjs             bundles src/index.tsx -> dist/bundle.js
+      src/
+        index.tsx           desktop-only bootstrap: wires react-reconciler to
+                           the engine, renders your shared App from ../../../src
     Cargo.toml              its own [workspace]
     windows/                depends on rn-windows
       Cargo.toml
@@ -25,7 +30,10 @@ my-app/                    your existing React Native app — UNCHANGED
       src/main.rs
 ```
 
-`ios/`, `android/`, `macos/` never change and never see Cargo. Everything
+`ios/`, `android/`, `macos/` never change and never see Cargo. Your
+shared `src/` stays plain React Native components — the react-reconciler
+bootstrap that's specific to Desktop-Runtime lives entirely inside
+`desktop/js/src/index.tsx`, a separate file, not mixed into it. Everything
 below happens inside `desktop/`.
 
 ## Step 1 — Add the two registries
@@ -128,7 +136,7 @@ Desktop-Runtime-specific.
 import * as esbuild from 'esbuild';
 
 await esbuild.build({
-  entryPoints: ['../../src/index.tsx'],
+  entryPoints: ['src/index.tsx'],   // desktop/js/src/index.tsx — step 7, NOT your app's shared src/
   bundle: true,
   outfile: 'dist/bundle.js',
   format: 'iife',          // Hermes has no module loader
@@ -145,28 +153,28 @@ await esbuild.build({
 });
 ```
 
-## Step 7 — Wire up your entry point
+## Step 7 — Write `desktop/js/src/index.tsx`
 
-Your `src/index.tsx` needs one bit of boilerplate to hand its React tree
-to the engine (this is the same for every consumer, and the engine can't
-do it for you since it doesn't own your tree):
+This file — not anything in your app's shared `src/` — is where
+Desktop-Runtime-specific code lives: it hands your React tree to the
+engine. Every consumer writes this once (the engine can't do it for you,
+since it doesn't own your tree):
 
 ```tsx
+// desktop/js/src/index.tsx
 import React from 'react';
 import Reconciler from 'react-reconciler';
 import { ConcurrentRoot } from 'react-reconciler/constants';
 import { hostConfig } from '@zxcloli666/desktop-runtime-js/src/hostConfig';
-import { Text, View } from 'react-native';
 
 const Renderer = Reconciler(hostConfig);
 
-function App() {
-  return (
-    <View style={{ backgroundColor: [0.04, 0.05, 0.08, 1.0] }}>
-      <Text style={{ color: [1, 1, 1, 1], margin: 16 }}>Hello, Desktop-Runtime</Text>
-    </View>
-  );
-}
+// Your actual, shared UI — the same component Metro renders for
+// iOS/Android/macOS. It imports only plain react-native/
+// @shopify/react-native-skia/react-native-reanimated, nothing
+// Desktop-Runtime-specific — that's what makes it shared in the first
+// place.
+import { App } from '../../../src/App';
 
 const root = Renderer.createContainer(
   { rootId: null }, ConcurrentRoot, null, false, null, '',
@@ -175,13 +183,32 @@ const root = Renderer.createContainer(
 Renderer.updateContainer(<App />, root, null, null);
 ```
 
+If you're starting from scratch and don't have a shared `App` yet, a
+trivial one to prove the pipeline works:
+
+```tsx
+// src/App.tsx (your app's shared root — no Desktop-Runtime import here)
+import React from 'react';
+import { Text, View } from 'react-native';
+
+export function App() {
+  return (
+    <View style={{ backgroundColor: [0.04, 0.05, 0.08, 1.0] }}>
+      <Text style={{ color: [1, 1, 1, 1], margin: 16 }}>Hello, Desktop-Runtime</Text>
+    </View>
+  );
+}
+```
+
 Colors are `[r, g, b, a]` tuples (0-1 floats) or CSS strings
 (`"#5a8cff"`, `"rgba(0,0,0,0.35)"`) — both work, same as real React
 Native.
 
 A fuller example (pressable tiles, a scrollable list, a `withTiming`
 animation) using the same pattern: `js/playground/src/index.tsx` in this
-repo.
+repo — it plays the role of `desktop/js/src/index.tsx` above, just with
+its own zero-dependency demo components instead of an imported shared
+`App`.
 
 ## Step 8 — Build and run
 

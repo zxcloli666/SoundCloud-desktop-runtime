@@ -9,13 +9,18 @@
 
 ```
 my-app/                    твоё существующее RN-приложение — БЕЗ ИЗМЕНЕНИЙ
-  src/                     общие компоненты — те же файлы на всех платформах
+  src/                     общие компоненты (напр. App.tsx) — те же файлы
+                           на всех платформах, никакого импорта
+                           Desktop-Runtime внутри
   index.js  ios/  android/  macos/  package.json    не тронуты, никакого Cargo
 
   desktop/                 НОВОЕ — единственная папка, знающая про Desktop-Runtime
     js/
       package.json
-      build.mjs             собирает ../../src/index.tsx -> dist/bundle.js
+      build.mjs             собирает src/index.tsx -> dist/bundle.js
+      src/
+        index.tsx           десктоп-онли бутстрап: подключает react-reconciler
+                           к движку, рендерит общий App из ../../../src
     Cargo.toml              свой собственный [workspace]
     windows/                зависит от rn-windows
       Cargo.toml
@@ -25,7 +30,10 @@ my-app/                    твоё существующее RN-приложен
       src/main.rs
 ```
 
-`ios/`, `android/`, `macos/` не меняются и никогда не видят Cargo. Всё
+`ios/`, `android/`, `macos/` не меняются и никогда не видят Cargo. Общий
+`src/` остаётся обычными React Native компонентами — react-reconciler
+бутстрап, специфичный для Desktop-Runtime, целиком живёт в
+`desktop/js/src/index.tsx`, отдельном файле, не подмешан в него. Всё
 дальше происходит внутри `desktop/`.
 
 ## Шаг 1 — Добавить два реестра
@@ -128,7 +136,7 @@ npm install @zxcloli666/desktop-runtime-js esbuild
 import * as esbuild from 'esbuild';
 
 await esbuild.build({
-  entryPoints: ['../../src/index.tsx'],
+  entryPoints: ['src/index.tsx'],   // desktop/js/src/index.tsx — шаг 7, НЕ общий src/ приложения
   bundle: true,
   outfile: 'dist/bundle.js',
   format: 'iife',           // у Hermes нет загрузчика модулей
@@ -145,28 +153,27 @@ await esbuild.build({
 });
 ```
 
-## Шаг 7 — Подключить точку входа
+## Шаг 7 — Написать `desktop/js/src/index.tsx`
 
-`src/index.tsx` нуждается в небольшом шаблонном коде, чтобы отдать своё
-React-дерево движку (одинаково для каждого потребителя, движок не может
-сделать это за вас — он не владеет вашим деревом):
+Именно этот файл — не что-то в общем `src/` приложения — специфичен для
+Desktop-Runtime: он отдаёт React-дерево движку. Каждый потребитель пишет
+это один раз (движок не может сделать это за вас — он не владеет вашим
+деревом):
 
 ```tsx
+// desktop/js/src/index.tsx
 import React from 'react';
 import Reconciler from 'react-reconciler';
 import { ConcurrentRoot } from 'react-reconciler/constants';
 import { hostConfig } from '@zxcloli666/desktop-runtime-js/src/hostConfig';
-import { Text, View } from 'react-native';
 
 const Renderer = Reconciler(hostConfig);
 
-function App() {
-  return (
-    <View style={{ backgroundColor: [0.04, 0.05, 0.08, 1.0] }}>
-      <Text style={{ color: [1, 1, 1, 1], margin: 16 }}>Привет, Desktop-Runtime</Text>
-    </View>
-  );
-}
+// Твой настоящий, общий UI — тот же компонент, что рендерит Metro для
+// iOS/Android/macOS. Импортирует только обычный react-native/
+// @shopify/react-native-skia/react-native-reanimated, ничего
+// Desktop-Runtime-специфичного — именно поэтому он общий.
+import { App } from '../../../src/App';
 
 const root = Renderer.createContainer(
   { rootId: null }, ConcurrentRoot, null, false, null, '',
@@ -175,13 +182,32 @@ const root = Renderer.createContainer(
 Renderer.updateContainer(<App />, root, null, null);
 ```
 
+Если начинаете с нуля и общего `App` ещё нет — тривиальный, чтобы
+проверить, что пайплайн работает:
+
+```tsx
+// src/App.tsx (общий корень приложения — никакого импорта Desktop-Runtime здесь)
+import React from 'react';
+import { Text, View } from 'react-native';
+
+export function App() {
+  return (
+    <View style={{ backgroundColor: [0.04, 0.05, 0.08, 1.0] }}>
+      <Text style={{ color: [1, 1, 1, 1], margin: 16 }}>Привет, Desktop-Runtime</Text>
+    </View>
+  );
+}
+```
+
 Цвета — тюплы `[r, g, b, a]` (float 0-1) или CSS-строки (`"#5a8cff"`,
 `"rgba(0,0,0,0.35)"`) — работает и то, и другое, как в настоящем React
 Native.
 
 Более полный пример (нажимаемые тайлы, скроллящийся список,
 `withTiming`-анимация) на том же паттерне: `js/playground/src/index.tsx`
-в этом репо.
+в этом репо — играет ту же роль, что `desktop/js/src/index.tsx` выше,
+просто со своими zero-dependency демо-компонентами вместо импортированного
+общего `App`.
 
 ## Шаг 8 — Собрать и запустить
 
