@@ -103,6 +103,29 @@ function PulseBox() {
   return <Animated.View style={style} />;
 }
 
+// Three `key` swaps in a row, each forcing a real unmount + mount (not
+// commitUpdate) — mirrors loading -> content -> content2. Reproduces the
+// detachDeletedInstance bug (tests/screen_swap.rs): the first swap's
+// deletion-effects crash doesn't break its OWN commit (the mutation phase
+// already landed by the time the passive-effect flush throws) — it breaks
+// the reconciler's scheduler state for the *next* one, so phase 2 never
+// commits without the fix. A single swap alone doesn't catch this.
+function ScreenSwap() {
+  const [phase, setPhase] = React.useState(0);
+  React.useEffect(() => {
+    if (phase === 0) setPhase(1);
+  }, [phase]);
+  React.useEffect(() => {
+    if (phase === 1) {
+      const id = setTimeout(() => setPhase(2), 0);
+      return () => clearTimeout(id);
+    }
+  }, [phase]);
+  if (phase === 0) return <View key="phase0" style={{ width: 22, height: 22, margin: 8, backgroundColor: [0.8, 0.2, 0.2, 1.0] }} />;
+  if (phase === 1) return <View key="phase1" style={{ width: 44, height: 44, margin: 8, backgroundColor: [0.9, 0.7, 0.1, 1.0] }} />;
+  return <View key="phase2" style={{ width: 66, height: 66, margin: 8, backgroundColor: [0.2, 0.8, 0.3, 1.0] }} />;
+}
+
 function App() {
   return (
     <View style={{ backgroundColor: ROOT_BACKGROUND }}>
@@ -110,6 +133,7 @@ function App() {
         <PressableTile label="A" />
         <PressableTile label="B" />
         <RequiredAssetTile />
+        <ScreenSwap />
       </View>
       <OverflowCarousel />
       {/* PulseBox stays last — tests/reanimated.rs finds it via

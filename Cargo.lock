@@ -1055,7 +1055,7 @@ dependencies = [
 
 [[package]]
 name = "js-host"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "base64",
  "ordered-float",
@@ -1878,7 +1878,7 @@ dependencies = [
 
 [[package]]
 name = "rn-linux"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "js-host",
  "skia-desktop",
@@ -1888,7 +1888,7 @@ dependencies = [
 
 [[package]]
 name = "rn-windows"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "rn-linux",
 ]
@@ -2207,7 +2207,7 @@ dependencies = [
 
 [[package]]
 name = "skia-desktop"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "gl",
  "glutin",

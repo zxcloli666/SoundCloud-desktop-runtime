@@ -113,6 +113,23 @@ fn console_log(message: String) {
     println!("[js] {message}");
 }
 
+/// Loud stderr path for errors caught in PRELUDE_JS's timer/microtask queues.
+#[hermes_op(name = "__scDeferredCallbackError")]
+fn deferred_callback_error(source: String, message: String) {
+    eprintln!(
+        "\n================================================================================\n\
+        [js-host] UNCAUGHT ERROR in a deferred {source} callback\n\
+        This is the same queue react-reconciler uses for its own internal scheduling\n\
+        (e.g. flushing passive effects after a commit) — an uncaught exception here can\n\
+        silently break the NEXT commit, freezing the UI on stale content with no crash.\n\
+        A common cause: a host-config method react-reconciler calls unconditionally\n\
+        (see js/src/hostConfig.ts) is missing.\n\
+        ================================================================================\n\
+        {message}\n\
+        ================================================================================\n"
+    );
+}
+
 /// Shims for host globals bare Hermes doesn't provide (no browser, no Node).
 ///
 /// `setTimeout`/`setImmediate` must NOT run their callback inline — the
@@ -162,7 +179,7 @@ const PRELUDE_JS: &str = r#"
             try {
                 timer.fn();
             } catch (e) {
-                console.error('timer error: ' + ((e && e.stack) || e));
+                __scDeferredCallbackError('timer', (e && e.stack) || String(e));
             }
         });
     };
@@ -171,7 +188,7 @@ globalThis.queueMicrotask = globalThis.queueMicrotask || function (fn) {
     Promise.resolve().then(function () {
         // A throw here is an unhandled rejection — silent by default. Surface
         // it, since this is where react-reconciler's commit work runs.
-        try { fn(); } catch (e) { console.error('microtask error: ' + ((e && e.stack) || e)); }
+        try { fn(); } catch (e) { __scDeferredCallbackError('microtask', (e && e.stack) || String(e)); }
     });
 };
 globalThis.console = {
@@ -181,7 +198,7 @@ globalThis.console = {
 };
 "#;
 
-/// Registers the 16 generic ops every consumer of this engine needs —
+/// Registers the 17 generic ops every consumer of this engine needs —
 /// nothing here ever touches `sc-rn`/`@sc/ui`. A consumer that wants
 /// SoundCloud-specific ops too (live auth/home/wave/etc.) layers them on top
 /// by calling their own plugin crate's `install(rt)` afterwards — see
@@ -203,6 +220,7 @@ pub fn install(rt: &Runtime) -> rusty_hermes::Result<()> {
     watch_press::register(rt)?;
     unwatch_press::register(rt)?;
     console_log::register(rt)?;
+    deferred_callback_error::register(rt)?;
     rt.eval(PRELUDE_JS).map_err(|e| {
         rusty_hermes::Error::RuntimeError(format!("failed to install JS prelude shims: {e}"))
     })?;

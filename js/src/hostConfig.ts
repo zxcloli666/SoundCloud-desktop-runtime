@@ -261,6 +261,7 @@ export const hostConfig = {
     currentUpdatePriority = priority;
   },
   resolveUpdatePriority: () => currentUpdatePriority || DefaultEventPriority,
+  shouldAttemptEagerTransition: () => false,
 
   createInstance(type: string, props: ViewProps): Instance {
     if (type === 'View') {
@@ -388,4 +389,5 @@ export const hostConfig = {
   hideTextInstance(): void {},
   unhideInstance(): void {},
   unhideTextInstance(): void {},
+  detachDeletedInstance(): void {},
 };

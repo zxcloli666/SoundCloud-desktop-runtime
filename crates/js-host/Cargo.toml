@@ -1,6 +1,6 @@
 [package]
 name = "js-host"
-version = "0.1.0"
+version = "0.1.2"
 description = "Hermes + Yoga + Skia scene host for the Desktop-Runtime engine"
 repository = "https://github.com/zxcloli666/SoundCloud-desktop-runtime"
 edition.workspace = true

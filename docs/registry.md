@@ -66,8 +66,8 @@ Then it's ordinary Cargo:
 
 ```toml
 [dependencies]
-js-host = { version = "0.1.0", registry = "desktop-runtime" }
-rn-linux = { version = "0.1.1", registry = "desktop-runtime" }
+js-host = { version = "0.1.2", registry = "desktop-runtime" }
+rn-linux = { version = "0.1.2", registry = "desktop-runtime" }
 ```
 
 or `cargo add js-host --registry desktop-runtime`. `rusty_hermes`

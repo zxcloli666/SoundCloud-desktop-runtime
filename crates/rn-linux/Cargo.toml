@@ -1,13 +1,13 @@
 [package]
 name = "rn-linux"
-version = "0.1.1"
+version = "0.1.2"
 description = "React Native runtime engine for Linux desktop — no Fabric, no webview"
 repository = "https://github.com/zxcloli666/SoundCloud-desktop-runtime"
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-js-host = { version = "0.1.0", path = "../js-host", registry = "desktop-runtime" }
-skia-desktop = { version = "0.1.0", path = "../skia-desktop", registry = "desktop-runtime" }
+js-host = { version = "0.1.2", path = "../js-host", registry = "desktop-runtime" }
+skia-desktop = { version = "0.1.2", path = "../skia-desktop", registry = "desktop-runtime" }
 skia-safe = { version = "0.99.0", features = ["gl"] }
 winit = "0.30.13"

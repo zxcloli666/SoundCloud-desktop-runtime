@@ -81,3 +81,6 @@ mod image_cache_test;
 #[cfg(test)]
 #[path = "tests/image_resize_mode.rs"]
 mod image_resize_mode_test;
+#[cfg(test)]
+#[path = "tests/screen_swap.rs"]
+mod screen_swap_test;

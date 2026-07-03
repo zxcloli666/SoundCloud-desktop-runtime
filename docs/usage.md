@@ -75,14 +75,14 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-rn-windows = { version = "0.1.1", registry = "desktop-runtime" }
+rn-windows = { version = "0.1.2", registry = "desktop-runtime" }
 ```
 
 `desktop/linux/Cargo.toml` — identical, except:
 
 ```toml
 [dependencies]
-rn-linux = { version = "0.1.1", registry = "desktop-runtime" }
+rn-linux = { version = "0.1.2", registry = "desktop-runtime" }
 ```
 
 Each binary only ever depends on its own platform's crate — building
