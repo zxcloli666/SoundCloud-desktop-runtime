@@ -65,6 +65,32 @@ struct App {
     /// whatever's under the cursor at that later moment (matches real touch
     /// semantics: a press-and-drag-off still ends the SAME touch target).
     pressed_node: Option<u32>,
+    focused: bool,
+    occluded: bool,
+}
+
+/// `Occluded` isn't delivered on Wayland/Windows (winit's own docs) —
+/// `focused` alone already covers alt-tab/minimize on every backend;
+/// `occluded` only adds precision on X11 (visible-but-covered). Free
+/// functions, not `App` methods: called from spots that already hold
+/// `self.gpu.as_mut()`, which a `&self` method would conflict with.
+fn should_render(focused: bool, occluded: bool) -> bool {
+    focused && !occluded
+}
+
+/// While hidden, `gpu.present()` (a real GPU swap) can block forever —
+/// compositors commonly stop delivering vsync to backgrounded windows,
+/// and this is the one thread handling every OS event, so a blocked swap
+/// freezes the whole app, not just rendering. Stop requesting redraws and
+/// let the event loop sleep until something (most likely regaining focus)
+/// wakes it back up.
+fn sync_control_flow(event_loop: &ActiveEventLoop, gpu: &GlWindowSurface, focused: bool, occluded: bool) {
+    if should_render(focused, occluded) {
+        event_loop.set_control_flow(ControlFlow::Poll);
+        gpu.window.request_redraw();
+    } else {
+        event_loop.set_control_flow(ControlFlow::Wait);
+    }
 }
 
 impl App {
@@ -91,6 +117,14 @@ impl ApplicationHandler for App {
         };
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::Focused(focused) => {
+                self.focused = focused;
+                sync_control_flow(event_loop, gpu, self.focused, self.occluded);
+            }
+            WindowEvent::Occluded(occluded) => {
+                self.occluded = occluded;
+                sync_control_flow(event_loop, gpu, self.focused, self.occluded);
+            }
             WindowEvent::Resized(size) => {
                 gpu.resize(size.width, size.height);
                 // useWindowDimensions (js/src/react-native.tsx) needs to know
@@ -212,7 +246,12 @@ impl ApplicationHandler for App {
                     gpu.present();
                     // Keep animating: reanimated timings/derived values need a
                     // steady stream of frames, not just resize/input events.
-                    gpu.window.request_redraw();
+                    // Guarded, not unconditional: a focus/occlusion change
+                    // mid-frame shouldn't re-arm a redraw sync_control_flow
+                    // just switched off.
+                    if should_render(self.focused, self.occluded) {
+                        gpu.window.request_redraw();
+                    }
                 }
             }
             _ => {}
@@ -266,6 +305,8 @@ pub fn run(config: RunConfig) -> ! {
         snapshot_delay_ms,
         cursor_pos: (0.0, 0.0),
         pressed_node: None,
+        focused: true,
+        occluded: false,
     };
     event_loop.run_app(&mut app).expect("event loop run_app failed");
     std::process::exit(0);
