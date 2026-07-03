@@ -104,6 +104,15 @@ jobs:
           node ops/cargo-registry/publish-crate.mjs crates/rn-linux registry-index crate-output
           node ops/cargo-registry/publish-crate.mjs crates/rn-windows registry-index crate-output
 
+      # Every index entry above still points at the ephemeral local server
+      # for any desktop-runtime dependency — see
+      # fixup-ephemeral-urls.mjs's own comment for why this has to be one
+      # pass over the whole directory, after packaging, not a per-crate
+      # translation during it.
+      - name: Fix up ephemeral registry URLs before deploying
+        run: |
+          node ops/cargo-registry/fixup-ephemeral-urls.mjs sparse+http://127.0.0.1:8931/ sparse+https://zxcloli666.github.io/SoundCloud-desktop-runtime/registry/ registry-index
+
       - name: Upload .crate tarballs as release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

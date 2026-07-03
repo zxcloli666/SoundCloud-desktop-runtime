@@ -70,16 +70,12 @@ const CRATES_IO_INDEX = 'https://github.com/rust-lang/crates.io-index';
 // and publish.yml's own comment) so a crate published earlier in the same
 // run (e.g. skia-desktop, needed by rn-linux) resolves without waiting on
 // real GitHub Pages propagation. `cargo metadata` reports THAT url for any
-// `registry = "desktop-runtime"` dependency it resolves — baking it into
-// the deployed index verbatim would leave every consumer's `cargo add`
-// trying to resolve against a nonexistent localhost server (a real
-// incident already hit this once for rusty_hermes — see docs/pitfalls/).
-// Translate it back to the real, public registry URL before writing the
-// index entry; a no-op when this env var isn't set (e.g. the fork's own
-// registry, published without any local override).
-const REAL_DESKTOP_RUNTIME_INDEX = 'sparse+https://zxcloli666.github.io/SoundCloud-desktop-runtime/registry/';
-const LOCAL_OVERRIDE_INDEX = process.env.CARGO_REGISTRIES_DESKTOP_RUNTIME_INDEX;
-
+// `registry = "desktop-runtime"` dependency it resolves, so it ends up
+// baked into the index entries written here too — left as-is on purpose:
+// fixup-ephemeral-urls.mjs rewrites every occurrence across the whole
+// `registry-index/` directory in one pass, once, after ALL crates in this
+// run are packaged (see its own comment for why doing this per-dependency,
+// here, instead breaks same-run multi-hop chains).
 const deps = pkg.dependencies
   .filter((d) => d.kind !== 'dev')
   .map((d) => ({
@@ -90,7 +86,7 @@ const deps = pkg.dependencies
     default_features: d.uses_default_features,
     target: d.target,
     kind: d.kind ?? 'normal',
-    registry: d.registry === LOCAL_OVERRIDE_INDEX ? REAL_DESKTOP_RUNTIME_INDEX : (d.registry ?? CRATES_IO_INDEX),
+    registry: d.registry ?? CRATES_IO_INDEX,
     package: d.rename ? d.name : undefined,
   }));
 
