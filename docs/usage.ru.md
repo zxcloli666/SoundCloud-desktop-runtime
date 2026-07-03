@@ -1,109 +1,39 @@
 # Гайд по использованию
 
-Как подключить Desktop-Runtime из своего проекта: установка, минимальное
-дерево, бандл под шимы, свои host-функции. (English version:
-[`usage.md`](./usage.md).)
+Пошагово: берёшь своё существующее React Native приложение (iOS/Android,
+может macOS через `react-native-macos`) и добавляешь Windows + Linux, из
+той же кодовой базы компонентов, в одном репо. (English version:
+[`usage.md`](./usage.md). Зачем это вообще нужно: [README.md](../README.md).)
 
-## 0. Кроссплатформенность — существующее RN-приложение на десктопе
-
-Если у вас уже есть React Native приложение — iOS, Android, может
-macOS через `react-native-macos` — использующее `@shopify/react-native-skia`
-для кастомной отрисовки, Desktop-Runtime — это способ довести ТО ЖЕ
-приложение до Windows и Linux, без форка и без переписывания компонентов:
-
-1. Код компонентов (`View`/`Text`/`Pressable`/`Canvas`/`Group`/
-   `useSharedValue`/...) не меняется. Он и так говорит только с публичным
-   API `react-native`/`@shopify/react-native-skia`/`react-native-reanimated`
-   — это и есть весь контракт.
-2. На мобилках и macOS эти импорты резолвятся в настоящие нативные
-   модули, как обычно.
-3. На Windows/Linux сборка десктопного бандла резолвит те же импорты в
-   шимы Desktop-Runtime (раздел 3 ниже) — одна esbuild `alias`-запись,
-   тот же трюк, что `react-native-web` использует для браузерных сборок.
-   Дереву компонентов не нужно знать, на какой платформе оно бежит.
-4. Небольшой, десктоп-онли Rust-бинарь (раздел 2) открывает окно и
-   хостит этот бандл — это новый код, который пишется один раз на
-   приложение (это точка входа именно ВАШЕГО приложения на десктопе,
-   Desktop-Runtime не может владеть ей за вас), не что-то, что форкается
-   из существующего проекта.
-
-Итог: одна кодовая база компонентов, пять платформ. Как именно
-проверяется "твой Skia-код по-прежнему работает на Windows/Linux", а не
-просто заявляется — [`compat/README.md`](../compat/README.md).
-
-### Где это реально лежит в твоём ОДНОМ репо
-
-Rust/Cargo, `rn-linux` и `rn-windows` НЕ подтягиваются рядом со сборкой
-iOS/Android/macOS — там всё как сегодня: обычный React Native CLI и
-Metro. Desktop-Runtime появляется только в одной новой, добавочной папке:
+## Что получится в итоге
 
 ```
 my-app/                    твоё существующее RN-приложение — БЕЗ ИЗМЕНЕНИЙ
-  src/                     общие компоненты (View/Text/Canvas/...) — ОДНИ
-                           И ТЕ ЖЕ файлы для всех платформ ниже, мобилки и
-                           десктоп одинаково
-  index.js                 точка входа RN CLI (Metro) — мобилки/macOS
-  ios/  android/  macos/    обычные RN/react-native-macos проекты —
-                           не тронуты, никакого Cargo, никакого
-                           Desktop-Runtime
-  package.json             реальные зависимости твоего приложения:
-                           react-native / @shopify/react-native-skia /
-                           react-native-reanimated / react-native-macos
+  src/                     общие компоненты — те же файлы на всех платформах
+  index.js  ios/  android/  macos/  package.json    не тронуты, никакого Cargo
 
-  desktop/                 ЕДИНСТВЕННАЯ папка, которая вообще знает про
-                           Desktop-Runtime — всё выше этой строки его не
-                           замечает
+  desktop/                 НОВОЕ — единственная папка, знающая про Desktop-Runtime
     js/
-      package.json         отдельный package.json: esbuild +
-                           @zxcloli666/desktop-runtime-js
-      build.mjs             резолвит react-native/etc в шимы (раздел 3
-                           ниже), собирает ../../src/index.tsx в
-                           dist/bundle.js — ОДИН бандл на Windows И Linux
-                           сразу (шимовый JS идентичен в обоих случаях,
-                           отличается только нативный хост)
-    Cargo.toml              свой собственный [workspace] — НЕ вложен ни в
-                           какой другой Rust-workspace, та же логика, что
-                           у собственного разделения examples/e2e в этом
-                           репо (docs/pitfalls/
-                           cross-repo-workspace-split.md): `cargo build`
-                           где-то ещё в твоём репо (если там есть Rust)
-                           никогда не заденет это
-    windows/
-      Cargo.toml            зависит от rn-windows (registry = "desktop-runtime")
-      src/main.rs           rn_linux::run(RunConfig { bundle_path: "../js/dist/bundle.js".into(), .. })
-    linux/
-      Cargo.toml            зависит от rn-linux (registry = "desktop-runtime")
-      src/main.rs           по структуре идентичен windows/src/main.rs —
-                           отличается только сам крейт-зависимость
+      package.json
+      build.mjs             собирает ../../src/index.tsx -> dist/bundle.js
+    Cargo.toml              свой собственный [workspace]
+    windows/                зависит от rn-windows
+      Cargo.toml
+      src/main.rs
+    linux/                  зависит от rn-linux
+      Cargo.toml
+      src/main.rs
 ```
 
-Конкретно по платформам:
+`ios/`, `android/`, `macos/` не меняются и никогда не видят Cargo. Всё
+дальше происходит внутри `desktop/`.
 
-- **iOS / Android**: `react-native run-ios` / `run-android` как обычно.
-  `desktop/` не видит вообще, `cargo` не запускается.
-- **macOS**: `react-native-macos` как обычно — та же история.
-- **Windows**: `cd desktop/js && pnpm build`, потом `cd desktop/windows &&
-  cargo build --release` (или это делает твой Windows-раннер в CI).
-  Подтягивает только `rn-windows` и его цепочку зависимостей —
-  `rn-linux` нигде не упоминается в `desktop/windows/Cargo.toml`, значит
-  на Windows-машине он никогда не соберётся.
-- **Linux**: то же самое, из `desktop/linux` — подтягивает `rn-linux`,
-  никогда `rn-windows`.
+## Шаг 1 — Добавить два реестра
 
-`desktop/js/dist/bundle.js` собирается ОДИН РАЗ и используется и Windows-,
-и Linux-бинарём без изменений — шимовый JS (`react-native.tsx`/
-`rnskia.tsx`/`reanimated.tsx`/`hostConfig.ts`) — один и тот же файл в
-обоих случаях, пересобирать под каждую платформу отдельно нечего.
-Единственное, чем отличаются `desktop/windows` и `desktop/linux` — это
-какой ровно один крейт (`rn-windows` vs `rn-linux`) указан в их
-несколько-строчном `main.rs`.
-
-## 1. Установка
-
-Rust-крейты и JS-пакет публикуются в собственные реестры этого репо — см.
-[`registry.md`](./registry.md), почему не crates.io/npm напрямую.
-
-**`.cargo/config.toml`** (в проекте или `~/.cargo/config.toml`):
+Rust-крейты и JS-пакет хостятся в собственных реестрах этого репо (почему
+не crates.io/npm: [`registry.md`](./registry.md)). Добавить оба, один
+раз, в `~/.cargo/config.toml` (или `desktop/.cargo/config.toml` для
+проектной настройки):
 
 ```toml
 [registries]
@@ -111,42 +41,62 @@ desktop-runtime = { index = "sparse+https://zxcloli666.github.io/SoundCloud-desk
 rusty-hermes-fork = { index = "sparse+https://zxcloli666.github.io/rusty_hermes/registry/" }
 ```
 
-**`Cargo.toml`:**
+## Шаг 2 — Создать `desktop/`
+
+```sh
+mkdir -p desktop/js/src desktop/windows/src desktop/linux/src
+```
+
+`desktop/Cargo.toml` — собственный workspace, чтобы `cargo build` где-то
+ещё в репо никогда его не задел:
+
+```toml
+[workspace]
+members = ["windows", "linux"]
+resolver = "2"
+```
+
+## Шаг 3 — Добавить Rust-крейт под каждую платформу
+
+`desktop/windows/Cargo.toml`:
+
+```toml
+[package]
+name = "my-app-windows"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rn-windows = { version = "0.1.0", registry = "desktop-runtime" }
+```
+
+`desktop/linux/Cargo.toml` — идентично, кроме:
 
 ```toml
 [dependencies]
-rn-linux = { version = "0.1.0", registry = "desktop-runtime" }     # Linux
-rn-windows = { version = "0.1.0", registry = "desktop-runtime" }   # Windows
-js-host = { version = "0.1.0", registry = "desktop-runtime" }
+rn-linux = { version = "0.1.0", registry = "desktop-runtime" }
 ```
 
-`rn-linux` и `rn-windows` дают идентичный API `run(RunConfig)`
-(`rn-windows` — тонкий бинарный крейт над тем же платформо-агностичным
-`rn_linux::run`, отдельного `rn_windows::run` нет — в самом движке ничего
-Linux-специфичного нет); берите тот, что соответствует вашему `cargo
-build --target`, либо разведите оба через `[target.'cfg(windows)'.
-dependencies]` / `[target.'cfg(unix)'.dependencies]` в своём
-`Cargo.toml`, если собираете под обе платформы из одного крейта.
-`cargo add rn-linux --registry desktop-runtime` (или `rn-windows`).
-Зависимость
-`js-host` на `rusty_hermes` (биндинг Hermes, публикуется из реестра
-своего собственного репо — см. [`registry.md`](./registry.md))
-резолвится транзитивно — ничего дополнительно настраивать не нужно,
-кроме двух реестров выше. Первая сборка компилирует Hermes из исходников
-(~7-8 минут на Linux), дальше — как с любой другой зависимостью,
-артефакт переиспользуется.
+Каждый бинарь зависит только от своего крейта — сборка `desktop/linux`
+никогда не подтягивает `rn-windows`, и наоборот.
 
-**JS-пакет** (шимы + host-config для react-reconciler):
+## Шаг 4 — Написать `main.rs`
 
-```sh
-npm config set @zxcloli666:registry https://npm.pkg.github.com
-npm install @zxcloli666/desktop-runtime-js
+Одинаковое содержимое в `desktop/windows/src/main.rs` и
+`desktop/linux/src/main.rs` (поменять `rn_windows`/`rn_linux` на крейт из
+шага 3 — оба дают идентичный `run(RunConfig)`):
+
+```rust
+fn main() {
+    rn_linux::run(rn_linux::RunConfig {
+        bundle_path: "../js/dist/bundle.js".into(),
+        window_title: "My App".to_string(),
+        ..Default::default()
+    });
+}
 ```
 
-## 2. Минимальное окно
-
-`rn-linux::run` принимает `RunConfig` и никогда не возвращается — открывает
-окно, эвалит бандл, крутит рендер-луп. Весь публичный API:
+Весь `RunConfig`:
 
 ```rust
 pub struct RunConfig {
@@ -157,37 +107,31 @@ pub struct RunConfig {
 }
 ```
 
-```rust
-fn main() {
-    rn_linux::run(rn_linux::RunConfig {
-        bundle_path: "dist/bundle.js".into(),
-        window_title: "My App".to_string(),
-        ..Default::default()
-    });
-}
+## Шаг 5 — Установить JS-пакет шимов
+
+```sh
+cd desktop/js
+npm config set @zxcloli666:registry https://npm.pkg.github.com
+npm install @zxcloli666/desktop-runtime-js esbuild
 ```
 
-`bundle_path` — путь к JS-бандлу, собранному под шимы движка (следующий
-раздел); `rn-linux`/`rn-windows` не заботятся о его содержимом сверх того,
-что он зовёт `react-reconciler`'s `updateContainer` против уже
-зарегистрированного host-config'а движка.
+## Шаг 6 — Написать `build.mjs`
 
-## 3. Бандл под шимы
-
-JS-код приложения импортирует `react-native` / `@shopify/react-native-skia`
-/ `react-native-reanimated` совершенно обычным образом — esbuild `alias`
-(тот же трюк, что использует `react-native-web`) резолвит их в шимы
-движка на этапе сборки, а не в реальные нативные модули:
+Вот и вся магия: обычные импорты `react-native`/
+`@shopify/react-native-skia`/`react-native-reanimated` в твоём
+приложении резолвятся в шимы Desktop-Runtime вместо настоящих нативных
+модулей — на этапе сборки. Код компонентов ничего Desktop-Runtime-
+специфичного не импортирует.
 
 ```js
-// build.mjs
+// desktop/js/build.mjs
 import * as esbuild from 'esbuild';
 
 await esbuild.build({
-  entryPoints: ['src/index.tsx'],
+  entryPoints: ['../../src/index.tsx'],
   bundle: true,
   outfile: 'dist/bundle.js',
-  format: 'iife',       // у Hermes нет загрузчика модулей
+  format: 'iife',           // у Hermes нет загрузчика модулей
   platform: 'neutral',
   mainFields: ['main'],
   target: 'es2020',
@@ -201,9 +145,11 @@ await esbuild.build({
 });
 ```
 
-Точка входа связывает `react-reconciler` с host-config движка и монтирует
-дерево — это шаблонный код, нужный каждому потребителю один раз (движок
-не владеет вашим React-деревом, вы владеете):
+## Шаг 7 — Подключить точку входа
+
+`src/index.tsx` нуждается в небольшом шаблонном коде, чтобы отдать своё
+React-дерево движку (одинаково для каждого потребителя, движок не может
+сделать это за вас — он не владеет вашим деревом):
 
 ```tsx
 import React from 'react';
@@ -229,20 +175,36 @@ const root = Renderer.createContainer(
 Renderer.updateContainer(<App />, root, null, null);
 ```
 
-Более полный, реальный пример (нажимаемые тайлы, скроллящийся список,
-`withTiming`-анимация) — `js/playground/src/index.tsx` в этом репо, тот
-же паттерн, просто задействует больше поверхности шимов.
-
 Цвета — тюплы `[r, g, b, a]` (float 0-1) или CSS-строки (`"#5a8cff"`,
 `"rgba(0,0,0,0.35)"`) — работает и то, и другое, как в настоящем React
 Native.
 
-## 4. Свои host-функции
+Более полный пример (нажимаемые тайлы, скроллящийся список,
+`withTiming`-анимация) на том же паттерне: `js/playground/src/index.tsx`
+в этом репо.
 
-Если приложению нужны нативные возможности сверх рендера (auth, локальные
-данные, платформенные API — что угодно, для чего приложение вообще
-существует) — регистрируйте свои `js_host::hermes_op`-функции поверх 15
-генерик-опов движка, через `RunConfig::before_bundle_eval`:
+## Шаг 8 — Собрать и запустить
+
+```sh
+cd desktop/js && pnpm install && node build.mjs   # -> dist/bundle.js
+
+# Windows:
+cd desktop/windows && cargo run --release
+
+# Linux:
+cd desktop/linux && cargo run --release
+```
+
+Первая сборка компилирует Hermes из исходников (~7-8 минут), дальше —
+как с любой другой зависимостью. Один и тот же `dist/bundle.js`
+запускается на обеих платформах — пересобирать под каждую отдельно не
+нужно.
+
+## Шаг 9 (опционально) — Свои нативные функции
+
+Если приложению нужны нативные возможности сверх рендера (auth,
+локальные данные, что угодно) — регистрируйте свою host-функцию поверх
+16 встроенных опов движка:
 
 ```rust
 use js_host::hermes_op;
@@ -254,7 +216,7 @@ fn get_version() -> String {
 
 fn main() {
     rn_linux::run(rn_linux::RunConfig {
-        bundle_path: "dist/bundle.js".into(),
+        bundle_path: "../js/dist/bundle.js".into(),
         before_bundle_eval: Some(Box::new(|rt| {
             get_version::register(rt).map_err(|e| e.to_string())
         })),
@@ -263,27 +225,24 @@ fn main() {
 }
 ```
 
-`before_bundle_eval` зовётся один раз, после регистрации генерик-опов
-движка, но до чтения бандла — правильное место и для одноразовой
-инициализации (открыть базу, прочитать конфиг — что нужно приложению до
-того, как запустится хоть один JS). Асинхронные host-функции, которым
-нельзя блокировать рендер-поток, могут использовать
-`js_host::async_bridge::spawn_call` — полный реальный пример (host-функции
-SoundCloud для auth/данных) — `examples/soundcloud/crates/sc-desktop-ops`
-в этом репо, и `examples/soundcloud/crates/sc-desktop-example` — как это
-подключается в `RunConfig`.
+`before_bundle_eval` зовётся один раз, до чтения бандла — правильное
+место и для другой одноразовой инициализации (открыть базу, прочитать
+конфиг). Для асинхронного, что не должно блокировать рендер-поток —
+`js_host::async_bridge::spawn_call`, полный реальный пример —
+`examples/soundcloud/crates/sc-desktop-ops` в этом репо, и
+`examples/soundcloud/crates/sc-desktop-example` — как это подключается в
+`RunConfig`.
 
-## 5. Совместимость и ограничения
+## Справочно
 
-Таблица совместимости — [в README](../README.md#compatibility): против
-каких версий `react-native`/`@shopify/react-native-skia`/
-`react-native-reanimated` проверены шимы. Реальные найденные и
-исправленные баги — [`docs/pitfalls/`](./pitfalls/), стоит пробежаться,
-если что-то ведёт себя неожиданно.
-
-`rn-windows` собирается и рендерит на том же платформо-агностичном
-движке, что и `rn-linux` (в `crates/` нет ничего платформо-специфичного,
-кроме самих `winit`/`glutin`/`skia-safe`/`rusty_hermes`, а они уже
-поддерживают Windows апстримом — см. `docs/pitfalls/
-windows-msvc-build.md` за единственной реально Windows-специфичной
-частью: проводкой самого Hermes через MSVC).
+- **Совместимость**: [таблица в README](../README.md#compatibility) —
+  против каких версий `react-native`/`@shopify/react-native-skia`/
+  `react-native-reanimated` проверены шимы.
+- **Уже найденные и исправленные баги**: [`docs/pitfalls/`](./pitfalls/)
+  — стоит пробежаться, если что-то ведёт себя неожиданно.
+- **Про Windows отдельно**: `rn-windows` работает на том же движке, что
+  и `rn-linux` — в `crates/` нет ничего платформо-специфичного, кроме
+  самих `winit`/`glutin`/`skia-safe`/`rusty_hermes`, а они уже
+  поддерживают Windows апстримом. Единственная реально Windows-
+  специфичная часть — проводка самого Hermes через MSVC — описана в
+  [`docs/pitfalls/windows-msvc-build.md`](./pitfalls/windows-msvc-build.md).
