@@ -75,7 +75,7 @@ rusty-hermes-fork = { index = "sparse+https://zxcloli666.github.io/rusty_hermes/
 ```toml
 # Cargo.toml
 [dependencies]
-rn-linux = { version = "0.1.0", registry = "desktop-runtime" }
+rn-linux = { version = "0.1.1", registry = "desktop-runtime" }
 ```
 
 ```sh

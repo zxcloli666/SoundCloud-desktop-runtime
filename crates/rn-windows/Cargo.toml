@@ -7,4 +7,4 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-rn-linux = { version = "0.1.0", path = "../rn-linux", registry = "desktop-runtime" }
+rn-linux = { version = "0.1.1", path = "../rn-linux", registry = "desktop-runtime" }
