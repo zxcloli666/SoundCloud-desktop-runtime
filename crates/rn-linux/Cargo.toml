@@ -1,6 +1,6 @@
 [package]
 name = "rn-linux"
-version = "0.1.2"
+version = "0.1.3"
 description = "React Native runtime engine for Linux desktop — no Fabric, no webview"
 repository = "https://github.com/zxcloli666/SoundCloud-desktop-runtime"
 edition.workspace = true

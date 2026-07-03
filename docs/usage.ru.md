@@ -75,14 +75,14 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-rn-windows = { version = "0.1.2", registry = "desktop-runtime" }
+rn-windows = { version = "0.1.3", registry = "desktop-runtime" }
 ```
 
 `desktop/linux/Cargo.toml` — идентично, кроме:
 
 ```toml
 [dependencies]
-rn-linux = { version = "0.1.2", registry = "desktop-runtime" }
+rn-linux = { version = "0.1.3", registry = "desktop-runtime" }
 ```
 
 Каждый бинарь зависит только от своего крейта — сборка `desktop/linux`

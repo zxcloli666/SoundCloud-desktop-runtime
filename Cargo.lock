@@ -1878,7 +1878,7 @@ dependencies = [
 
 [[package]]
 name = "rn-linux"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "js-host",
  "skia-desktop",
@@ -1888,7 +1888,7 @@ dependencies = [
 
 [[package]]
 name = "rn-windows"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "rn-linux",
 ]
