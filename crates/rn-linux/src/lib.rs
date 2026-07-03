@@ -170,7 +170,16 @@ impl ApplicationHandler for App {
                     }
                 }
             }
-            WindowEvent::MouseWheel { delta, .. } => {
+            WindowEvent::MouseWheel { delta, .. } if self.focused => {
+                // Guarded on focus: winit still delivers wheel events to an
+                // unfocused window (nothing about pausing redraws above
+                // stops event delivery), and some X11/Wayland setups report
+                // an inverted delta sign for a background window — scroll
+                // down while unfocused, and it can come through as scroll
+                // up once acted on. Simplest robust fix: don't act on wheel
+                // input at all unless this window is actually focused,
+                // matching how most desktop apps already behave.
+                //
                 // `LineDelta` (most mice) is in "lines", not pixels — an
                 // arbitrary but reasonable-feeling multiplier, same idea as
                 // a browser's default wheel step. `PixelDelta` (trackpads)
