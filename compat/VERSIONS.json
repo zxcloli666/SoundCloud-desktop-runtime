@@ -10,7 +10,7 @@
       ]
     },
     "@shopify/react-native-skia": {
-      "current": "2.9.0",
+      "current": "2.10.0",
       "history": [
         {
           "version": "2.6.9",
@@ -23,11 +23,15 @@
         {
           "version": "2.9.0",
           "verifiedAt": "2026-07-20"
+        },
+        {
+          "version": "2.10.0",
+          "verifiedAt": "2026-07-27"
         }
       ]
     },
     "react-native-reanimated": {
-      "current": "4.5.2",
+      "current": "4.5.3",
       "history": [
         {
           "version": "4.5.0",
@@ -40,6 +44,10 @@
         {
           "version": "4.5.2",
           "verifiedAt": "2026-07-20"
+        },
+        {
+          "version": "4.5.3",
+          "verifiedAt": "2026-07-27"
         }
       ]
     },

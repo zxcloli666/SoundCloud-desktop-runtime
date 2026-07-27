@@ -51,8 +51,8 @@ clean engine as Linux instead of a patch bolted onto Fabric.
 | Package | Status | Current | Verified since | Track record |
 | --- | :---: | --- | --- | --- |
 | `react-native` | ✅ | `0.86.0` | 2026-07-02 | `0.86.0` |
-| `@shopify/react-native-skia` | ✅ | `2.9.0` | 2026-07-02 | `2.6.9` → `2.7.0` → `2.9.0` |
-| `react-native-reanimated` | ✅ | `4.5.2` | 2026-07-02 | `4.5.0` → `4.5.1` → `4.5.2` |
+| `@shopify/react-native-skia` | ✅ | `2.10.0` | 2026-07-02 | `2.6.9` → `2.7.0` → `2.9.0` → `2.10.0` |
+| `react-native-reanimated` | ✅ | `4.5.3` | 2026-07-02 | `4.5.0` → `4.5.1` → `4.5.2` → `4.5.3` |
 | `react-reconciler` | ✅ | `0.33.0` | 2026-07-02 | `0.33.0` |
 <!-- COMPAT_TABLE:END -->
 
