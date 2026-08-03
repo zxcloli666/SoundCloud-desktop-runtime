@@ -1,16 +1,20 @@
 {
   "packages": {
     "react-native": {
-      "current": "0.86.0",
+      "current": "0.86.2",
       "history": [
         {
           "version": "0.86.0",
           "verifiedAt": "2026-07-02"
+        },
+        {
+          "version": "0.86.2",
+          "verifiedAt": "2026-08-03"
         }
       ]
     },
     "@shopify/react-native-skia": {
-      "current": "2.10.0",
+      "current": "2.10.1",
       "history": [
         {
           "version": "2.6.9",
@@ -27,6 +31,10 @@
         {
           "version": "2.10.0",
           "verifiedAt": "2026-07-27"
+        },
+        {
+          "version": "2.10.1",
+          "verifiedAt": "2026-08-03"
         }
       ]
     },
