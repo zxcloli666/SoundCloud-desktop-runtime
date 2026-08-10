@@ -14,7 +14,7 @@
       ]
     },
     "@shopify/react-native-skia": {
-      "current": "2.10.1",
+      "current": "2.11.0",
       "history": [
         {
           "version": "2.6.9",
@@ -35,6 +35,10 @@
         {
           "version": "2.10.1",
           "verifiedAt": "2026-08-03"
+        },
+        {
+          "version": "2.11.0",
+          "verifiedAt": "2026-08-10"
         }
       ]
     },
