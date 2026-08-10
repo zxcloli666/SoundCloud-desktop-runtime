@@ -47,9 +47,17 @@ export const View = React.forwardRef<number, Props>((props, ref) =>
   React.createElement('View', { ...props, ref }),
 );
 
-export const Text = React.forwardRef<number, Props>((props, ref) =>
-  React.createElement('View', { ...props, ref }, props.children as React.ReactNode),
-);
+export const Text = React.forwardRef<number, Props & { numberOfLines?: number }>((props, ref) => {
+  const { numberOfLines, style, ...rest } = props;
+  // `numberOfLines` is a prop, not a style key — fold it into the style
+  // channel (same synthetic-key trick as ScrollView's `scrollable` and
+  // Image's `imageUri`), since that's the pipe `__scSetStyle` already has.
+  return React.createElement(
+    'View',
+    { ...rest, style: numberOfLines == null ? style : [style, { numberOfLines }], ref },
+    props.children as React.ReactNode,
+  );
+});
 
 // `require('./photo.png')`/`import photo from './photo.png'` resolve to a
 // `data:` URI string directly — js/build-support.mjs's `imageAssetLoaders()`
@@ -309,22 +317,27 @@ export const Platform = {
   Version: 1,
 };
 
+// Real display scale, pushed by rn-linux alongside every resize — RN dp
+// semantics: layout/coordinates are logical, `get()` is the dp→px ratio.
+let pixelRatio = 1;
+
 export const PixelRatio = {
-  get: () => 1,
+  get: () => pixelRatio,
   getFontScale: () => 1,
-  getPixelSizeForLayoutSize: (n: number) => Math.round(n),
-  roundToNearestPixel: (n: number) => Math.round(n),
+  getPixelSizeForLayoutSize: (n: number) => Math.round(n * pixelRatio),
+  roundToNearestPixel: (n: number) => Math.round(n * pixelRatio) / pixelRatio,
 };
 
 type Size = { width: number; height: number };
 let windowSize: Size = { width: 0, height: 0 };
 const resizeListeners = new Set<(size: Size) => void>();
 
-// Called from rn-linux on every `WindowEvent::Resized` — the one place
-// outside React state that needs to reach into a live component tree, same
-// pattern as reanimated's `__reanimatedTick`.
-(globalThis as Record<string, unknown>).__scNotifyResize = function scNotifyResize(width: number, height: number): void {
+// Called from rn-linux on every `WindowEvent::Resized` (logical dp size) —
+// the one place outside React state that needs to reach into a live
+// component tree, same pattern as reanimated's `__reanimatedTick`.
+(globalThis as Record<string, unknown>).__scNotifyResize = function scNotifyResize(width: number, height: number, scale?: number): void {
   windowSize = { width, height };
+  if (typeof scale === 'number' && scale > 0) pixelRatio = scale;
   for (const listener of resizeListeners) listener(windowSize);
 };
 

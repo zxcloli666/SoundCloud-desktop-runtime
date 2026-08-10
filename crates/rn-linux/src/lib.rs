@@ -57,7 +57,12 @@ struct App {
     start: Instant,
     snapshot_path: Option<PathBuf>,
     snapshot_delay_ms: u64,
-    /// Window-physical-pixel coordinates, same space `compute_layout` uses —
+    /// Display scale (winit `scale_factor`) — the scene lives in *logical*
+    /// units (RN dp): layout, hit tests and scroll deltas all divide by
+    /// this, and the draw pass multiplies it back via `canvas.scale`, so a
+    /// HiDPI display renders at full physical resolution instead of 1×.
+    scale: f32,
+    /// Window-logical (dp) coordinates, same space `compute_layout` uses —
     /// updated on every `CursorMoved`, read back on `MouseInput`.
     cursor_pos: (f32, f32),
     /// The pressable node hit on the last `MouseInput` press-down, if any —
@@ -127,18 +132,25 @@ impl ApplicationHandler for App {
             }
             WindowEvent::Resized(size) => {
                 gpu.resize(size.width, size.height);
-                // useWindowDimensions (js/src/react-native.tsx) needs to know
-                // without the app having to poll every frame.
+                // useWindowDimensions (js/src/react-native.tsx) speaks
+                // logical dp, same as the scene.
                 self.hermes
                     .eval(&format!(
-                        "if (typeof __scNotifyResize === 'function') __scNotifyResize({}, {});",
-                        size.width, size.height
+                        "if (typeof __scNotifyResize === 'function') __scNotifyResize({}, {}, {});",
+                        size.width as f32 / self.scale,
+                        size.height as f32 / self.scale,
+                        self.scale
                     ))
                     .expect("resize notify failed");
                 gpu.window.request_redraw();
             }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                self.scale = scale_factor as f32;
+                // The following `Resized` re-notifies JS with the new ratio.
+                gpu.window.request_redraw();
+            }
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor_pos = (position.x as f32, position.y as f32);
+                self.cursor_pos = (position.x as f32 / self.scale, position.y as f32 / self.scale);
             }
             WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
                 let (cx, cy) = self.cursor_pos;
@@ -180,8 +192,10 @@ impl ApplicationHandler for App {
                 // is already precise.
                 const LINE_HEIGHT_PX: f32 = 40.0;
                 let (raw_dx, raw_dy) = match delta {
+                    // Line steps are already resolution-independent; pixel
+                    // deltas (trackpads) arrive physical → logical.
                     MouseScrollDelta::LineDelta(x, y) => (x * LINE_HEIGHT_PX, y * LINE_HEIGHT_PX),
-                    MouseScrollDelta::PixelDelta(p) => (p.x as f32, p.y as f32),
+                    MouseScrollDelta::PixelDelta(p) => (p.x as f32 / self.scale, p.y as f32 / self.scale),
                 };
                 // winit's own convention (MouseScrollDelta's doc comment):
                 // positive = content should move right/down, i.e. reveal
@@ -222,8 +236,9 @@ impl ApplicationHandler for App {
                 js_host::async_bridge::deliver(&self.hermes);
 
                 let (width, height): (u32, u32) = gpu.window.inner_size().into();
+                let scale = self.scale;
                 js_host::host::with_scene(|scene| {
-                    scene.compute_layout(width as f32, height as f32);
+                    scene.compute_layout(width as f32 / scale, height as f32 / scale);
                 });
                 // Separate `with_scene` call, not nested in the one above:
                 // dispatching onLayout may run JS that re-enters the Scene
@@ -243,7 +258,14 @@ impl ApplicationHandler for App {
                 }
 
                 js_host::host::with_scene(|scene| {
-                    scene.draw(gpu.canvas());
+                    let canvas = gpu.canvas();
+                    canvas.save();
+                    // Logical scene → physical framebuffer: every dp maps to
+                    // `scale` device pixels, text/curves rasterize at native
+                    // resolution.
+                    canvas.scale((scale, scale));
+                    scene.draw(canvas);
+                    canvas.restore();
                 });
 
                 let elapsed = self.start.elapsed().as_millis() as u64;
@@ -298,9 +320,14 @@ pub fn run(config: RunConfig) -> ! {
         .with_inner_size(winit::dpi::LogicalSize::new(width, height));
     let gpu = GlWindowSurface::new(&event_loop, attrs);
     gpu.window.request_redraw();
+    let scale = gpu.window.scale_factor() as f32;
     let (initial_width, initial_height): (u32, u32) = gpu.window.inner_size().into();
     hermes
-        .eval(&format!("if (typeof __scNotifyResize === 'function') __scNotifyResize({initial_width}, {initial_height});"))
+        .eval(&format!(
+            "if (typeof __scNotifyResize === 'function') __scNotifyResize({}, {}, {scale});",
+            initial_width as f32 / scale,
+            initial_height as f32 / scale
+        ))
         .expect("resize notify failed");
 
     let snapshot_path = std::env::var_os("RN_LINUX_SNAPSHOT").map(PathBuf::from);
@@ -314,6 +341,7 @@ pub fn run(config: RunConfig) -> ! {
         start: Instant::now(),
         snapshot_path,
         snapshot_delay_ms,
+        scale,
         cursor_pos: (0.0, 0.0),
         pressed_node: None,
         focused: true,

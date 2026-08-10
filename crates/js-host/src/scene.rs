@@ -20,20 +20,22 @@ use ordered_float::OrderedFloat;
 use serde::Deserialize;
 use serde_json::Value as Json;
 use skia_safe::{
-    BlendMode, BlurStyle, Canvas, Color4f, Font, FontMgr, FontStyle, MaskFilter, Matrix, Paint,
-    PaintStyle, Point, RRect, Rect, SamplingOptions, Shader, TileMode, Typeface, Vector,
+    BlendMode, BlurStyle, Canvas, Color4f, FilterMode, Font, FontMgr, FontStyle, MaskFilter,
+    Matrix, MipmapMode, Paint, PaintStyle, Point, RRect, Rect, SamplingOptions, Shader, TileMode,
+    Typeface, Vector,
     canvas::{SaveLayerRec, SrcRectConstraint},
-    gradient, image_filters,
+    font::Edging as FontEdging,
+    font_style, gradient, image_filters,
 };
 use yoga::{Align, Direction, Edge, FlexDirection, Justify, MeasureMode, Node as YogaNode, PositionType, Size as YogaSize, StyleUnit, Wrap};
 
 use crate::image_cache;
 
 thread_local! {
-    // The system default typeface is somewhat expensive to resolve (font
-    // manager lookup) — cache it once per thread, cheap to `Typeface::clone`
-    // (Skia ref-counted handle) for a differently-sized `Font` each time.
-    static TYPEFACE_CACHE: RefCell<Option<Typeface>> = const { RefCell::new(None) };
+    // Typeface resolution (font-manager lookup) is expensive — cache per
+    // (family, weight), cheap to `Typeface::clone` (Skia ref-counted handle)
+    // for a differently-sized `Font` each time.
+    static TYPEFACE_CACHE: RefCell<HashMap<(String, i32), Typeface>> = RefCell::new(HashMap::new());
     // Set only for the duration of `Scene::compute_layout`'s `calculate_layout`
     // call — Yoga invokes `measure_text` synchronously and reentrantly from
     // there for any dirty text node, and that's the ONLY time it's non-null.
@@ -44,35 +46,66 @@ thread_local! {
     static CURRENT_SCENE: Cell<*const Scene> = const { Cell::new(std::ptr::null()) };
 }
 
-fn cached_typeface() -> Typeface {
+fn cached_typeface(family: &str, weight: i32) -> Typeface {
     TYPEFACE_CACHE.with(|cell| {
-        let mut slot = cell.borrow_mut();
-        if slot.is_none() {
-            *slot = Some(
-                FontMgr::default()
-                    .legacy_make_typeface(None, FontStyle::default())
-                    .expect("no system default typeface available"),
-            );
+        let mut cache = cell.borrow_mut();
+        if let Some(typeface) = cache.get(&(family.to_string(), weight)) {
+            return typeface.clone();
         }
-        slot.as_ref().expect("just initialized").clone()
+        let style = FontStyle::new(weight.into(), font_style::Width::NORMAL, font_style::Slant::Upright);
+        let font_mgr = FontMgr::default();
+        // `match_family_style` resolves real named families AND real weights
+        // (fontconfig picks the closest installed face); the legacy fallback
+        // covers unknown families and still honors the weight.
+        let typeface = (!family.is_empty())
+            .then(|| font_mgr.match_family_style(family, style))
+            .flatten()
+            .or_else(|| font_mgr.legacy_make_typeface(None, style))
+            .expect("no system default typeface available");
+        cache.insert((family.to_string(), weight), typeface.clone());
+        typeface
     })
 }
 
+const DEFAULT_FONT_WEIGHT: i32 = 400;
+
 fn sized_font(size: f32) -> Font {
-    Font::from_typeface(cached_typeface(), size)
+    styled_font("", DEFAULT_FONT_WEIGHT, size)
+}
+
+fn styled_font(family: &str, weight: i32, size: f32) -> Font {
+    let mut font = Font::from_typeface(cached_typeface(family, weight), size);
+    font.set_subpixel(true);
+    font.set_edging(FontEdging::SubpixelAntiAlias);
+    font
+}
+
+/// Line advance width, honoring `letterSpacing` — with tracking, width is
+/// the per-char advance sum (matching how `draw_text_line` positions chars)
+/// rather than the shaped-string width.
+fn line_width(text: &str, font: &Font, letter_spacing: f32) -> f32 {
+    if letter_spacing == 0.0 {
+        return font.measure_str(text, None).0;
+    }
+    let mut buf = [0u8; 4];
+    let mut width = 0.0;
+    let mut count = 0usize;
+    for ch in text.chars() {
+        width += font.measure_str(ch.encode_utf8(&mut buf), None).0;
+        count += 1;
+    }
+    width + letter_spacing * count.saturating_sub(1) as f32
 }
 
 /// Longest prefix of `text` (by character count) that, with "…" appended,
 /// measures within `max_width` — binary search since `Font::measure_str`
 /// isn't linear-cost-free to call per character on longer strings.
-fn truncate_with_ellipsis(text: &str, font: &Font, max_width: f32) -> String {
-    let (full_width, _) = font.measure_str(text, None);
-    if full_width <= max_width {
+fn truncate_with_ellipsis(text: &str, font: &Font, letter_spacing: f32, max_width: f32) -> String {
+    if line_width(text, font, letter_spacing) <= max_width {
         return text.to_string();
     }
     let ellipsis = "\u{2026}";
-    let (ellipsis_width, _) = font.measure_str(ellipsis, None);
-    if ellipsis_width > max_width {
+    if line_width(ellipsis, font, letter_spacing) > max_width {
         return String::new();
     }
     let chars: Vec<char> = text.chars().collect();
@@ -80,14 +113,116 @@ fn truncate_with_ellipsis(text: &str, font: &Font, max_width: f32) -> String {
     while lo < hi {
         let mid = lo + (hi - lo + 1) / 2;
         let candidate: String = chars[..mid].iter().collect::<String>() + ellipsis;
-        let (width, _) = font.measure_str(&candidate, None);
-        if width <= max_width {
+        if line_width(&candidate, font, letter_spacing) <= max_width {
             lo = mid;
         } else {
             hi = mid - 1;
         }
     }
     chars[..lo].iter().collect::<String>() + ellipsis
+}
+
+/// Greedy word wrap into lines of at most `max_width`, honoring explicit
+/// `\n` breaks; a single word wider than `max_width` hard-breaks mid-word
+/// (same as RN/web `overflow-wrap` behavior — never overflows its box).
+fn wrap_text_lines(text: &str, font: &Font, letter_spacing: f32, max_width: f32) -> Vec<String> {
+    let mut lines = Vec::new();
+    for paragraph in text.split('\n') {
+        if !max_width.is_finite() || max_width <= 0.0 || line_width(paragraph, font, letter_spacing) <= max_width {
+            lines.push(paragraph.to_string());
+            continue;
+        }
+        let mut current = String::new();
+        for word in paragraph.split(' ') {
+            let candidate = if current.is_empty() { word.to_string() } else { format!("{current} {word}") };
+            if line_width(&candidate, font, letter_spacing) <= max_width {
+                current = candidate;
+                continue;
+            }
+            if !current.is_empty() {
+                lines.push(std::mem::take(&mut current));
+            }
+            // The word alone may still be too wide — hard-break it.
+            let mut rest: &str = word;
+            while line_width(rest, font, letter_spacing) > max_width {
+                let chars: Vec<char> = rest.chars().collect();
+                let (mut lo, mut hi) = (1usize, chars.len());
+                while lo < hi {
+                    let mid = lo + (hi - lo + 1) / 2;
+                    let prefix: String = chars[..mid].iter().collect();
+                    if line_width(&prefix, font, letter_spacing) <= max_width {
+                        lo = mid;
+                    } else {
+                        hi = mid - 1;
+                    }
+                }
+                let prefix: String = chars[..lo].iter().collect();
+                let byte_split = prefix.len();
+                lines.push(prefix);
+                rest = &rest[byte_split..];
+                if rest.is_empty() {
+                    break;
+                }
+            }
+            current = rest.to_string();
+        }
+        lines.push(current);
+    }
+    lines
+}
+
+/// Everything needed to measure and draw a text node, resolved from its
+/// wrapping View's `LayoutPaint` (see `LayoutPaint::font_size`).
+struct ResolvedTextStyle {
+    font: Font,
+    letter_spacing: f32,
+    /// Vertical distance between consecutive baselines (`lineHeight` when
+    /// set, the font's natural line height otherwise).
+    line_advance: f32,
+    /// Font ascent as a positive "baseline sits this far below line top".
+    ascent: f32,
+    /// ascent + descent (no leading) — the glyph box centered inside each
+    /// `line_advance`-tall line slot.
+    natural_height: f32,
+    text_align: TextAlign,
+    number_of_lines: Option<usize>,
+    color: [f32; 4],
+}
+
+fn resolved_text_style(paint: &LayoutPaint) -> ResolvedTextStyle {
+    let font = styled_font(
+        paint.font_family.as_deref().unwrap_or(""),
+        paint.font_weight.unwrap_or(DEFAULT_FONT_WEIGHT),
+        paint.font_size,
+    );
+    let (_, metrics) = font.metrics();
+    let natural_height = metrics.descent - metrics.ascent;
+    ResolvedTextStyle {
+        letter_spacing: paint.letter_spacing,
+        line_advance: paint.line_height.unwrap_or(natural_height + metrics.leading),
+        ascent: -metrics.ascent,
+        natural_height,
+        text_align: paint.text_align,
+        number_of_lines: paint.number_of_lines,
+        color: paint.text_color,
+        font,
+    }
+}
+
+/// Draws one already-wrapped line; with tracking, chars are placed on
+/// per-char advances (kerning intentionally off — that's what tracking is).
+fn draw_text_line(canvas: &Canvas, text: &str, x: f32, baseline_y: f32, font: &Font, paint: &Paint, letter_spacing: f32) {
+    if letter_spacing == 0.0 {
+        canvas.draw_str(text, (x, baseline_y), font, paint);
+        return;
+    }
+    let mut buf = [0u8; 4];
+    let mut cursor = x;
+    for ch in text.chars() {
+        let s = ch.encode_utf8(&mut buf);
+        canvas.draw_str(&*s, (cursor, baseline_y), font, paint);
+        cursor += font.measure_str(&*s, None).0 + letter_spacing;
+    }
 }
 
 /// Yoga's measure-function hook (real single-line text measurement, replacing
@@ -98,7 +233,7 @@ fn truncate_with_ellipsis(text: &str, font: &Font, max_width: f32) -> String {
 /// size as a hint, same as real Text), `draw_layout_node` truncates with an
 /// ellipsis at draw time — this function only ever reports the untruncated
 /// size.
-extern "C" fn measure_text(node_ref: yoga::NodeRef, _width: f32, _width_mode: MeasureMode, _height: f32, _height_mode: MeasureMode) -> YogaSize {
+extern "C" fn measure_text(node_ref: yoga::NodeRef, width: f32, width_mode: MeasureMode, _height: f32, _height_mode: MeasureMode) -> YogaSize {
     let empty = YogaSize { width: 0.0, height: 0.0 };
     let Some(id) = yoga::get_node_ref_context(&node_ref).and_then(|ctx| ctx.downcast_ref::<NodeId>()).copied() else {
         return empty;
@@ -107,12 +242,19 @@ extern "C" fn measure_text(node_ref: yoga::NodeRef, _width: f32, _width_mode: Me
     if scene_ptr.is_null() {
         return empty;
     }
+    // Yoga's width constraint drives wrapping; `Undefined` (or NaN — Yoga
+    // passes NaN alongside Undefined) means "measure your natural width".
+    let max_width = match width_mode {
+        MeasureMode::Undefined => f32::INFINITY,
+        _ if width.is_nan() => f32::INFINITY,
+        _ => width,
+    };
     // SAFETY: only ever non-null for the duration of the `calculate_layout`
     // call inside `Scene::compute_layout`, which holds `self: &Scene` (this
     // exact pointer) on the stack for that whole call — Yoga only invokes
     // measure functions synchronously from within it, never after it returns.
     let scene = unsafe { &*scene_ptr };
-    scene.measure_text_node(id).unwrap_or(empty)
+    scene.measure_text_node(id, max_width).unwrap_or(empty)
 }
 
 pub type NodeId = u32;
@@ -130,6 +272,9 @@ pub enum NodeKind {
     /// requested size, same honest-stub approach as `react-native`'s `Image`.
     SkImage,
     Group,
+    /// Blurs everything already drawn *beneath* it into its (clipped) layer —
+    /// real glassmorphism (`<BackdropBlur>`/`<BackdropFilter>`).
+    BackdropBlur,
     Blur,
     RadialGradient,
     LinearGradient,
@@ -183,6 +328,9 @@ struct LayoutPaint {
     radii: CornerRadii,
     border_width: f32,
     border_color: Option<[f32; 4]>,
+    /// Per-edge `(width, color)` overrides (top/right/bottom/left) — drawn as
+    /// straight strips (separators/dividers), no corner-radius interaction.
+    border_edges: [(f32, Option<[f32; 4]>); 4],
     shadow: Option<ViewShadow>,
     /// `react-native.tsx`'s `Text` always renders `<View style={{fontSize,
     /// color, ...}}>{string}</View>` — these live on the wrapping View (this
@@ -190,6 +338,19 @@ struct LayoutPaint {
     /// looks them up via `SceneNode::parent`.
     font_size: f32,
     text_color: [f32; 4],
+    font_weight: Option<i32>,
+    font_family: Option<String>,
+    letter_spacing: f32,
+    line_height: Option<f32>,
+    text_align: TextAlign,
+    /// RN semantics: `None` wraps without limit, `Some(n)` caps at `n` lines
+    /// with a trailing ellipsis.
+    number_of_lines: Option<usize>,
+    /// RN `transform`, resolved to a matrix around the local origin; applied
+    /// around the node's center at draw time (RN's default pivot). Purely
+    /// visual — hit testing ignores it (press-scale animations are far too
+    /// small to matter there).
+    transform: Option<Matrix>,
     /// `(x, y)` — how far this node's *children* are shifted when drawing
     /// (a real `ScrollView`'s scroll position), Rust-owned rather than
     /// round-tripped through JS state for every wheel tick. Zero for every
@@ -203,6 +364,14 @@ struct LayoutPaint {
     image_url: Option<String>,
     image: Option<skia_safe::Image>,
     image_resize_mode: ImageResizeMode,
+}
+
+#[derive(Clone, Copy, Default, PartialEq)]
+enum TextAlign {
+    #[default]
+    Left,
+    Center,
+    Right,
 }
 
 #[derive(Clone, Copy, Default, PartialEq)]
@@ -381,16 +550,40 @@ pub struct StyleInput {
     pub border_bottom_right_radius: Option<f32>,
     pub border_width: Option<f32>,
     pub border_color: Option<Json>,
+    pub border_top_width: Option<f32>,
+    pub border_bottom_width: Option<f32>,
+    pub border_left_width: Option<f32>,
+    pub border_right_width: Option<f32>,
+    pub border_top_color: Option<Json>,
+    pub border_bottom_color: Option<Json>,
+    pub border_left_color: Option<Json>,
+    pub border_right_color: Option<Json>,
 
     pub shadow_color: Option<Json>,
     pub shadow_opacity: Option<f32>,
     pub shadow_radius: Option<f32>,
     pub shadow_offset: Option<ShadowOffset>,
+    /// Android-style elevation — mapped to an equivalent drop shadow when no
+    /// explicit `shadow*` props are set alongside it.
+    pub elevation: Option<f32>,
 
     /// Lives on the wrapping View (`react-native.tsx`'s `Text` component),
     /// not the `NodeKind::Text` child — see `LayoutPaint::font_size`.
     pub color: Option<Json>,
     pub font_size: Option<f32>,
+    /// Number (`600`) or string (`"600"`/`"bold"`/`"normal"`) — RN allows all.
+    pub font_weight: Option<Json>,
+    pub font_family: Option<String>,
+    pub letter_spacing: Option<f32>,
+    pub line_height: Option<f32>,
+    pub text_align: Option<String>,
+    /// Not a real RN style key — `react-native.tsx`'s `Text` folds its
+    /// `numberOfLines` prop in here (same synthetic-style-key channel as
+    /// `scrollable`/`imageUri`).
+    pub number_of_lines: Option<f64>,
+
+    /// RN transform array (`[{scale}, {translateX}, {rotate: "45deg"}, ...]`).
+    pub transform: Option<Json>,
 
     /// Set by `ScrollView`'s shim on its outer (clipping) View — marks it as
     /// a real mouse-wheel scroll target (`Scene::scrollable_nodes`), not
@@ -488,7 +681,8 @@ impl Scene {
             "Path" => NodeKind::SkPath,
             "Text" => NodeKind::SkText,
             "Image" => NodeKind::SkImage,
-            "Group" | "BackdropBlur" | "BackdropFilter" | "Mask" => NodeKind::Group,
+            "Group" | "Mask" => NodeKind::Group,
+            "BackdropBlur" | "BackdropFilter" => NodeKind::BackdropBlur,
             "Blur" | "ColorMatrix" | "Shader" => NodeKind::Blur,
             "RadialGradient" => NodeKind::RadialGradient,
             "LinearGradient" => NodeKind::LinearGradient,
@@ -760,6 +954,18 @@ impl Scene {
         if let Some(bc) = &style.border_color {
             node.paint.border_color = parse_color(bc);
         }
+        {
+            let widths = [&style.border_top_width, &style.border_right_width, &style.border_bottom_width, &style.border_left_width];
+            let colors = [&style.border_top_color, &style.border_right_color, &style.border_bottom_color, &style.border_left_color];
+            for i in 0..4 {
+                if let Some(w) = widths[i] {
+                    node.paint.border_edges[i].0 = *w;
+                }
+                if let Some(c) = colors[i] {
+                    node.paint.border_edges[i].1 = parse_color(c);
+                }
+            }
+        }
         if style.shadow_color.is_some() || style.shadow_opacity.is_some() || style.shadow_radius.is_some() || style.shadow_offset.is_some() {
             let mut color = style.shadow_color.as_ref().and_then(parse_color).unwrap_or([0.0, 0.0, 0.0, 1.0]);
             // RN multiplies shadowColor's own alpha by shadowOpacity, rather
@@ -768,6 +974,13 @@ impl Scene {
             let radius = style.shadow_radius.unwrap_or(0.0);
             let offset = style.shadow_offset.as_ref().map(|o| (o.width, o.height)).unwrap_or((0.0, 0.0));
             node.paint.shadow = Some(ViewShadow { color, radius, offset });
+        } else if let Some(elevation) = style.elevation {
+            // Android `elevation` alone — approximate the Material shadow.
+            node.paint.shadow = (elevation > 0.0).then_some(ViewShadow {
+                color: [0.0, 0.0, 0.0, 0.26],
+                radius: elevation,
+                offset: (0.0, elevation * 0.5),
+            });
         }
         if let Some(color) = &style.color {
             if let Some(c) = parse_color(color) {
@@ -776,6 +989,52 @@ impl Scene {
         }
         if let Some(size) = style.font_size {
             node.paint.font_size = size;
+        }
+        if let Some(weight) = style.font_weight.as_ref().and_then(parse_font_weight) {
+            node.paint.font_weight = Some(weight);
+        }
+        if let Some(family) = &style.font_family {
+            node.paint.font_family = Some(family.clone());
+        }
+        if let Some(spacing) = style.letter_spacing {
+            node.paint.letter_spacing = spacing;
+        }
+        if let Some(line_height) = style.line_height {
+            node.paint.line_height = Some(line_height);
+        }
+        if let Some(align) = style.text_align.as_deref() {
+            node.paint.text_align = match align {
+                "center" => TextAlign::Center,
+                "right" => TextAlign::Right,
+                _ => TextAlign::Left,
+            };
+        }
+        if let Some(n) = style.number_of_lines {
+            node.paint.number_of_lines = (n >= 1.0).then_some(n as usize);
+        }
+        if let Some(t) = &style.transform {
+            node.paint.transform = parse_transform_matrix(t).filter(|m| !m.is_identity());
+        }
+        // Text measures through its *parent's* paint (see `LayoutPaint::
+        // font_size`) — a font-affecting change on this wrapper must dirty
+        // the Text child's cached Yoga measurement or it keeps its old size.
+        if style.font_size.is_some()
+            || style.font_weight.is_some()
+            || style.font_family.is_some()
+            || style.letter_spacing.is_some()
+            || style.line_height.is_some()
+            || style.number_of_lines.is_some()
+        {
+            for child_id in node.children.clone() {
+                if let Some(child_cell) = self.nodes.get(&child_id) {
+                    let mut child = child_cell.borrow_mut();
+                    if matches!(child.kind, NodeKind::Text(_)) {
+                        if let Some(child_yoga) = child.yoga.as_mut() {
+                            child_yoga.mark_dirty();
+                        }
+                    }
+                }
+            }
         }
         match style.scrollable {
             Some(true) => {
@@ -967,7 +1226,25 @@ impl Scene {
     /// as JSON and interpreted per-kind in `draw_sk_node`, since the shapes
     /// vary too much (center+radius vs xywh vs gradient stops) for one struct.
     pub fn set_sk_props(&mut self, id: NodeId, props: Json) {
-        self.nodes.get(&id).expect("unknown node id").borrow_mut().props = props;
+        let cell = self.nodes.get(&id).expect("unknown node id");
+        let mut node = cell.borrow_mut();
+        // Skia `<Image image={useImage(...)}>` — the shim's image handle is
+        // `{uri}`; fetch+decode through the same per-node image_cache pipe
+        // the plain RN `<Image>` uses (`drain_ready` → `set_image`).
+        if matches!(node.kind, NodeKind::SkImage) {
+            let uri = props
+                .get("image")
+                .and_then(|img| if img.is_string() { img.as_str() } else { img.get("uri").and_then(Json::as_str) })
+                .map(str::to_owned);
+            if let Some(uri) = uri {
+                if node.paint.image_url.as_deref() != Some(uri.as_str()) {
+                    node.paint.image_url = Some(uri.clone());
+                    node.paint.image = None;
+                    image_cache::request(id, uri);
+                }
+            }
+        }
+        node.props = props;
     }
 
     /// Applies a decoded (or failed — `None`) `<Image>` fetch —
@@ -1004,19 +1281,23 @@ impl Scene {
 
     /// `measure_text`'s actual body — split out so it's an ordinary method
     /// (borrow-checked normally) rather than living inside the `unsafe`
-    /// pointer-dereferencing `extern "C" fn` itself.
-    fn measure_text_node(&self, id: NodeId) -> Option<YogaSize> {
+    /// pointer-dereferencing `extern "C" fn` itself. `max_width` is Yoga's
+    /// width constraint (infinite when unconstrained) — wrapping happens
+    /// here, so Yoga gets the real wrapped height.
+    fn measure_text_node(&self, id: NodeId, max_width: f32) -> Option<YogaSize> {
         let node = self.nodes.get(&id)?.borrow();
         let NodeKind::Text(text) = &node.kind else { return None };
-        let font_size = node
+        let style = node
             .parent
             .and_then(|p| self.nodes.get(&p))
-            .map(|p| p.borrow().paint.font_size)
-            .unwrap_or(DEFAULT_FONT_SIZE);
-        let font = sized_font(font_size);
-        let (width, _bounds) = font.measure_str(text, None);
-        let (_, metrics) = font.metrics();
-        let height = metrics.descent - metrics.ascent + metrics.leading;
+            .map(|p| resolved_text_style(&p.borrow().paint))
+            .unwrap_or_else(|| resolved_text_style(&SceneNode::layout(NodeKind::View).paint));
+        let mut lines = wrap_text_lines(text, &style.font, style.letter_spacing, max_width);
+        if let Some(cap) = style.number_of_lines {
+            lines.truncate(cap.max(1));
+        }
+        let width = lines.iter().map(|l| line_width(l, &style.font, style.letter_spacing)).fold(0.0, f32::max);
+        let height = lines.len().max(1) as f32 * style.line_advance;
         Some(YogaSize { width, height })
     }
 
@@ -1044,7 +1325,7 @@ impl Scene {
     }
 
     fn draw_layout_node(&self, id: NodeId, parent_x: f32, parent_y: f32, canvas: &Canvas) {
-        let (x, y, w, h, text, is_canvas, children, background, opacity, overflow_hidden, radii, border_width, border_color, shadow, parent, scroll_offset, image, image_resize_mode) = {
+        let (x, y, w, h, text, is_canvas, children, background, opacity, overflow_hidden, radii, border_width, border_color, border_edges, shadow, parent, scroll_offset, image, image_resize_mode, transform) = {
             let node = self.nodes.get(&id).expect("unknown node id").borrow();
             let yoga = node.yoga.as_ref().expect("draw_layout_node on a non-layout node");
             let x = parent_x + yoga.get_layout_left();
@@ -1070,11 +1351,13 @@ impl Scene {
                 node.paint.radii,
                 node.paint.border_width,
                 node.paint.border_color,
+                node.paint.border_edges,
                 node.paint.shadow,
                 node.parent,
                 node.paint.scroll_offset,
                 node.paint.image.clone(),
                 node.paint.image_resize_mode,
+                node.paint.transform,
             )
         };
 
@@ -1088,13 +1371,19 @@ impl Scene {
             canvas.save();
         }
 
-        // Drawn before the fill, same as Skia `BoxShadow` (`draw_box_shadow`):
-        // `drop_shadow`'s filtered draw includes a copy of the source shape
-        // itself, which the real fill right below then exactly covers,
-        // leaving only the blurred halo visible past the shape's edges.
+        // RN transform: around the view's center, inherited by the whole
+        // subtree via the canvas matrix.
+        if let Some(m) = transform {
+            canvas.concat(&matrix_around((x + w * 0.5, y + h * 0.5), &m));
+        }
+
+        // Drawn before the fill. `drop_shadow_only`, not `drop_shadow`: the
+        // real fill draws right below, and with a *translucent* fill the
+        // source copy `drop_shadow` embeds would show through as a same-hue
+        // double-tint instead of being exactly covered.
         if let Some(shadow) = shadow {
             let sk_color = Color4f::new(shadow.color[0], shadow.color[1], shadow.color[2], shadow.color[3]).to_color();
-            if let Some(filter) = image_filters::drop_shadow(shadow.offset, (shadow.radius, shadow.radius), sk_color, None, None, None) {
+            if let Some(filter) = image_filters::drop_shadow_only(shadow.offset, (shadow.radius, shadow.radius), sk_color, None, None, None) {
                 let mut paint = Paint::new(Color4f::new(shadow.color[0], shadow.color[1], shadow.color[2], shadow.color[3]), None);
                 paint.set_anti_alias(true);
                 paint.set_image_filter(filter);
@@ -1130,30 +1419,62 @@ impl Scene {
             }
         }
 
+        // Per-edge borders (separators/dividers) — straight strips along the
+        // edge, top/right/bottom/left; per-edge color falls back to the
+        // uniform `borderColor`.
+        for (i, (edge_w, edge_color)) in border_edges.iter().enumerate() {
+            if *edge_w <= 0.0 {
+                continue;
+            }
+            let Some([r, g, b, a]) = edge_color.or(border_color) else { continue };
+            let strip = match i {
+                0 => Rect::from_xywh(x, y, w, *edge_w),
+                1 => Rect::from_xywh(x + w - *edge_w, y, *edge_w, h),
+                2 => Rect::from_xywh(x, y + h - *edge_w, w, *edge_w),
+                _ => Rect::from_xywh(x, y, *edge_w, h),
+            };
+            let mut paint = Paint::new(Color4f::new(r, g, b, a), None);
+            paint.set_anti_alias(true);
+            canvas.draw_rect(strip, &paint);
+        }
+
         if overflow_hidden {
             canvas.clip_rrect(radii.rrect(rect), None, Some(true));
         }
 
         if let Some(text) = text {
-            // `fontSize`/`color` live on the wrapping View (this node's
-            // parent — see `LayoutPaint::font_size`), not this Text node.
-            let (font_size, color) = parent
+            // Font props live on the wrapping View (this node's parent — see
+            // `LayoutPaint::font_size`), not this Text node.
+            let style = parent
                 .and_then(|p| self.nodes.get(&p))
-                .map(|p| {
-                    let p = p.borrow();
-                    (p.paint.font_size, p.paint.text_color)
-                })
-                .unwrap_or((DEFAULT_FONT_SIZE, DEFAULT_TEXT_COLOR));
-            let font = sized_font(font_size);
-            // No line-wrapping support — a single line that doesn't fit its
-            // final (possibly flex-shrunk) width truncates with an ellipsis,
-            // the only sensible rendering for a non-wrapping Text.
-            let displayed = truncate_with_ellipsis(&text, &font, w);
-            let (_, metrics) = font.metrics();
-            let baseline_y = y + (h - (metrics.descent - metrics.ascent)) * 0.5 - metrics.ascent;
-            let mut paint = Paint::new(Color4f::new(color[0], color[1], color[2], color[3]), None);
+                .map(|p| resolved_text_style(&p.borrow().paint))
+                .unwrap_or_else(|| resolved_text_style(&SceneNode::layout(NodeKind::View).paint));
+            // Re-wrap against the *final* layout width (flex may have shrunk
+            // us below the natural measured size).
+            let mut lines = wrap_text_lines(&text, &style.font, style.letter_spacing, w);
+            if let Some(cap) = style.number_of_lines.map(|n| n.max(1)) {
+                if lines.len() > cap {
+                    lines.truncate(cap);
+                    if let Some(last) = lines.last_mut() {
+                        // Dropped lines → the visible tail carries the ellipsis.
+                        *last = truncate_with_ellipsis(&format!("{last}\u{2026}"), &style.font, style.letter_spacing, w);
+                    }
+                }
+            }
+            let block_height = lines.len() as f32 * style.line_advance;
+            let mut paint = Paint::new(Color4f::new(style.color[0], style.color[1], style.color[2], style.color[3]), None);
             paint.set_anti_alias(true);
-            canvas.draw_str(&displayed, (x, baseline_y), &font, &paint);
+            for (i, line) in lines.iter().enumerate() {
+                let displayed = truncate_with_ellipsis(line, &style.font, style.letter_spacing, w);
+                let displayed_width = line_width(&displayed, &style.font, style.letter_spacing);
+                let line_x = match style.text_align {
+                    TextAlign::Left => x,
+                    TextAlign::Center => x + (w - displayed_width) * 0.5,
+                    TextAlign::Right => x + w - displayed_width,
+                };
+                let baseline_y = y + (h - block_height) * 0.5 + i as f32 * style.line_advance + (style.line_advance - style.natural_height) * 0.5 + style.ascent;
+                draw_text_line(canvas, &displayed, line_x, baseline_y, &style.font, &paint, style.letter_spacing);
+            }
         }
 
         if is_canvas {
@@ -1188,8 +1509,9 @@ impl Scene {
             NodeKind::RoundedRect => self.draw_rounded_rect(&node, ox, oy, canvas),
             NodeKind::SkPath => self.draw_sk_path(&node, ox, oy, canvas),
             NodeKind::SkText => self.draw_sk_text(&node, ox, oy, canvas),
-            NodeKind::SkImage => self.draw_sk_image_placeholder(&node, ox, oy, canvas),
+            NodeKind::SkImage => self.draw_sk_image(&node, ox, oy, canvas),
             NodeKind::Group => self.draw_group(&node, ox, oy, canvas),
+            NodeKind::BackdropBlur => self.draw_backdrop_blur(&node, ox, oy, canvas),
             NodeKind::Box => self.draw_box(&node, ox, oy, canvas),
             // Configuration-only nodes: meaningful as a child of Circle/RRect/
             // Box/Group, not as something independently drawn.
@@ -1200,7 +1522,13 @@ impl Scene {
         }
     }
 
-    fn shape_paint(&self, node: &SceneNode, cx: f32, cy: f32, radius: f32) -> Paint {
+    /// `(cx, cy)`/`radius` — fallback gradient geometry in *canvas-local*
+    /// coordinates; `(ox, oy)` — the subtree's window offset, applied to
+    /// gradient shaders as a local matrix so shader geometry stays in the
+    /// same space the JS side wrote it in (bug #3: offset canvases used to
+    /// leave shaders anchored to the window origin).
+    fn shape_paint(&self, node: &SceneNode, ox: f32, oy: f32, cx: f32, cy: f32, radius: f32) -> Paint {
+        let shader_offset = Matrix::translate((ox, oy));
         let color = node.props.get("color").and_then(parse_color).unwrap_or([1.0, 1.0, 1.0, 1.0]);
         let mut paint = Paint::new(Color4f::new(color[0], color[1], color[2], color[3]), None);
         paint.set_anti_alias(true);
@@ -1222,12 +1550,12 @@ impl Scene {
             let child = self.nodes.get(&child_id).expect("unknown child id").borrow();
             match child.kind {
                 NodeKind::RadialGradient => {
-                    if let Some(shader) = radial_gradient_shader(&child.props, cx, cy, radius) {
+                    if let Some(shader) = radial_gradient_shader(&child.props, cx, cy, radius, &shader_offset) {
                         paint.set_shader(shader);
                     }
                 }
                 NodeKind::LinearGradient => {
-                    if let Some(shader) = linear_gradient_shader(&child.props) {
+                    if let Some(shader) = linear_gradient_shader(&child.props, &shader_offset) {
                         paint.set_shader(shader);
                     }
                 }
@@ -1257,9 +1585,9 @@ impl Scene {
     fn draw_sk_path(&self, node: &SceneNode, ox: f32, oy: f32, canvas: &Canvas) {
         let Some(svg) = node.props.get("path").and_then(Json::as_str) else { return };
         let Some(path) = skia_safe::Path::from_svg(svg) else { return };
-        let path = path.make_offset((ox, oy));
         let bounds = *path.bounds();
-        let paint = self.shape_paint(node, bounds.center_x(), bounds.center_y(), bounds.width().max(bounds.height()) * 0.5);
+        let path = path.make_offset((ox, oy));
+        let paint = self.shape_paint(node, ox, oy, bounds.center_x(), bounds.center_y(), bounds.width().max(bounds.height()) * 0.5);
         canvas.draw_path(&path, &paint);
     }
 
@@ -1275,48 +1603,64 @@ impl Scene {
         canvas.draw_str(text, (ox + x, oy + y), &font, &paint);
     }
 
-    /// No asset-decoding pipeline yet — draws the requested rect as a flat
-    /// placeholder so layouts using `<Image>` inside a Canvas are visible and
-    /// correctly sized rather than silently blank.
-    fn draw_sk_image_placeholder(&self, node: &SceneNode, ox: f32, oy: f32, canvas: &Canvas) {
+    /// Skia `<Image image={useImage(...)} fit="cover">` — decoded through the
+    /// same per-node image_cache pipe as the plain RN `<Image>` (requested in
+    /// `set_sk_props`). Draws nothing while the fetch is in flight, same as
+    /// real rn-skia with a not-yet-loaded image.
+    fn draw_sk_image(&self, node: &SceneNode, ox: f32, oy: f32, canvas: &Canvas) {
         let Some(rect) = json_rect(&node.props) else { return };
-        let mut paint = Paint::new(Color4f::new(0.5, 0.5, 0.5, 0.4), None);
-        paint.set_anti_alias(true);
-        canvas.draw_rect(rect.with_offset((ox, oy)), &paint);
+        let Some(image) = &node.paint.image else { return };
+        let dst = rect.with_offset((ox, oy));
+        let mode = match node.props.get("fit").and_then(Json::as_str) {
+            Some("cover") => ImageResizeMode::Cover,
+            Some("fill") => ImageResizeMode::Stretch,
+            Some("none") => ImageResizeMode::Center,
+            // rn-skia's default fit.
+            _ => ImageResizeMode::Contain,
+        };
+        canvas.save();
+        canvas.clip_rect(dst, None, Some(true));
+        draw_resized_image(canvas, image, dst, mode);
+        canvas.restore();
     }
 
     fn draw_circle(&self, node: &SceneNode, ox: f32, oy: f32, canvas: &Canvas) {
         let (cx, cy) = json_point(node.props.get("c")).unwrap_or((0.0, 0.0));
         let r = node.props.get("r").and_then(Json::as_f64).unwrap_or(0.0) as f32;
-        let paint = self.shape_paint(node, ox + cx, oy + cy, r);
+        let paint = self.shape_paint(node, ox, oy, cx, cy, r);
         canvas.draw_circle((ox + cx, oy + cy), r, &paint);
     }
 
     fn draw_rect_shape(&self, node: &SceneNode, ox: f32, oy: f32, canvas: &Canvas) {
-        let rect = json_rect(&node.props).unwrap_or(Rect::from_xywh(0.0, 0.0, 0.0, 0.0));
-        let rect = rect.with_offset((ox, oy));
-        let paint = self.shape_paint(node, rect.center_x(), rect.center_y(), rect.width().max(rect.height()) * 0.5);
-        canvas.draw_rect(rect, &paint);
+        let local = json_rect(&node.props).unwrap_or(Rect::from_xywh(0.0, 0.0, 0.0, 0.0));
+        let paint = self.shape_paint(node, ox, oy, local.center_x(), local.center_y(), local.width().max(local.height()) * 0.5);
+        canvas.draw_rect(local.with_offset((ox, oy)), &paint);
     }
 
     fn draw_rounded_rect(&self, node: &SceneNode, ox: f32, oy: f32, canvas: &Canvas) {
-        let rect = json_rect(&node.props).unwrap_or(Rect::from_xywh(0.0, 0.0, 0.0, 0.0)).with_offset((ox, oy));
+        let local = json_rect(&node.props).unwrap_or(Rect::from_xywh(0.0, 0.0, 0.0, 0.0));
         let r = node.props.get("r").and_then(Json::as_f64).unwrap_or(0.0) as f32;
-        let paint = self.shape_paint(node, rect.center_x(), rect.center_y(), rect.width().max(rect.height()) * 0.5);
-        canvas.draw_rrect(RRect::new_rect_xy(rect, r, r), &paint);
+        let paint = self.shape_paint(node, ox, oy, local.center_x(), local.center_y(), local.width().max(local.height()) * 0.5);
+        canvas.draw_rrect(RRect::new_rect_xy(local.with_offset((ox, oy)), r, r), &paint);
     }
 
     fn draw_group(&self, node: &SceneNode, ox: f32, oy: f32, canvas: &Canvas) {
-        canvas.save();
+        let count = canvas.save();
 
-        let (dx, dy) = json_translate(node.props.get("transform"));
+        // Full rn-skia transform (translate/scale/rotate), applied around the
+        // group's `origin` (canvas-local) via the canvas matrix — children
+        // keep drawing at their (ox, oy)-offset coordinates and inherit it.
+        if let Some(m) = node.props.get("transform").and_then(parse_transform_matrix) {
+            let (px, py) = json_point(node.props.get("origin")).unwrap_or((0.0, 0.0));
+            canvas.concat(&matrix_around((ox + px, oy + py), &m));
+        }
         let opacity = node.props.get("opacity").and_then(Json::as_f64).unwrap_or(1.0) as f32;
         let blend_mode = node.props.get("blendMode").and_then(Json::as_str).and_then(json_blend_mode);
 
         if let Some(clip) = node.props.get("clip") {
             if let Some(rect) = json_rect(clip) {
                 let r = clip.get("rx").and_then(Json::as_f64).unwrap_or(0.0) as f32;
-                canvas.clip_rrect(RRect::new_rect_xy(rect.with_offset((ox + dx, oy + dy)), r, r), None, Some(true));
+                canvas.clip_rrect(RRect::new_rect_xy(rect.with_offset((ox, oy)), r, r), None, Some(true));
             }
         }
 
@@ -1330,9 +1674,50 @@ impl Scene {
         }
 
         for &child in &node.children {
-            self.draw_sk_node(child, ox + dx, oy + dy, canvas);
+            self.draw_sk_node(child, ox, oy, canvas);
         }
-        canvas.restore();
+        canvas.restore_to_count(count);
+    }
+
+    /// Clips to `clip` (if any), then opens a layer whose *backdrop* —
+    /// everything already drawn beneath — is blurred into it
+    /// (`SaveLayerRec::backdrop`), then draws children (tint/overlay fills)
+    /// on top. `<BackdropFilter>` arrives here too, with the sigma coming
+    /// from its `<Blur>` config child instead of an own `blur` prop.
+    fn draw_backdrop_blur(&self, node: &SceneNode, ox: f32, oy: f32, canvas: &Canvas) {
+        let count = canvas.save();
+        if let Some(clip) = node.props.get("clip") {
+            if let Some(rect) = json_rect(clip) {
+                let r = clip.get("rx").and_then(Json::as_f64).unwrap_or(0.0) as f32;
+                canvas.clip_rrect(RRect::new_rect_xy(rect.with_offset((ox, oy)), r, r), None, Some(true));
+            }
+        }
+        let sigma = node
+            .props
+            .get("blur")
+            .and_then(Json::as_f64)
+            .map(|b| b as f32)
+            .or_else(|| {
+                node.children.iter().find_map(|id| {
+                    let child = self.nodes.get(id)?.borrow();
+                    if matches!(child.kind, NodeKind::Blur) {
+                        child.props.get("blur").and_then(Json::as_f64).map(|b| b as f32)
+                    } else {
+                        None
+                    }
+                })
+            })
+            .unwrap_or(0.0);
+        if sigma > 0.0 {
+            if let Some(filter) = image_filters::blur((sigma, sigma), TileMode::Clamp, None, None) {
+                let rec = SaveLayerRec::default().backdrop(&filter);
+                canvas.save_layer(&rec);
+            }
+        }
+        for &child in &node.children {
+            self.draw_sk_node(child, ox, oy, canvas);
+        }
+        canvas.restore_to_count(count);
     }
 
     fn draw_box(&self, node: &SceneNode, ox: f32, oy: f32, canvas: &Canvas) {
@@ -1355,7 +1740,7 @@ impl Scene {
         for &child_id in &node.children {
             let child = self.nodes.get(&child_id).expect("unknown child id").borrow();
             if let NodeKind::LinearGradient = child.kind {
-                if let Some(shader) = linear_gradient_shader(&child.props) {
+                if let Some(shader) = linear_gradient_shader(&child.props, &Matrix::translate((ox, oy))) {
                     fill.set_shader(shader);
                     has_fill = true;
                 }
@@ -1398,14 +1783,17 @@ fn draw_resized_image(canvas: &Canvas, image: &skia_safe::Image, dst: Rect, mode
     if image_w <= 0.0 || image_h <= 0.0 || dst.width() <= 0.0 || dst.height() <= 0.0 {
         return;
     }
+    // Linear + mipmap sampling — `SamplingOptions::default()` is nearest,
+    // which pixelates every scaled avatar/cover.
+    let sampling = SamplingOptions::new(FilterMode::Linear, MipmapMode::Linear);
     let paint = Paint::default();
     match mode {
         ImageResizeMode::Stretch => {
-            canvas.draw_image_rect(image, None, dst, &paint);
+            canvas.draw_image_rect_with_sampling_options(image, None, dst, sampling, &paint);
         }
         ImageResizeMode::Cover => {
             let src = cover_src_rect(image_w, image_h, dst.width(), dst.height());
-            canvas.draw_image_rect(image, Some((&src, SrcRectConstraint::Strict)), dst, &paint);
+            canvas.draw_image_rect_with_sampling_options(image, Some((&src, SrcRectConstraint::Strict)), dst, sampling, &paint);
         }
         ImageResizeMode::Contain => {
             let scale = (dst.width() / image_w).min(dst.height() / image_h);
@@ -1416,7 +1804,7 @@ fn draw_resized_image(canvas: &Canvas, image: &skia_safe::Image, dst: Rect, mode
                 draw_w,
                 draw_h,
             );
-            canvas.draw_image_rect(image, None, inset, &paint);
+            canvas.draw_image_rect_with_sampling_options(image, None, inset, sampling, &paint);
         }
         ImageResizeMode::Center => {
             let inset = Rect::from_xywh(
@@ -1425,7 +1813,7 @@ fn draw_resized_image(canvas: &Canvas, image: &skia_safe::Image, dst: Rect, mode
                 image_w,
                 image_h,
             );
-            canvas.draw_image_rect(image, None, inset, &paint);
+            canvas.draw_image_rect_with_sampling_options(image, None, inset, sampling, &paint);
         }
         ImageResizeMode::Repeat => {
             // Tiling shader in image-pixel space, translated so the first
@@ -1433,7 +1821,7 @@ fn draw_resized_image(canvas: &Canvas, image: &skia_safe::Image, dst: Rect, mode
             // would align to the canvas origin, drifting out of phase with
             // dst whenever it isn't at (0, 0).
             let local_matrix = Matrix::translate((dst.left, dst.top));
-            if let Some(shader) = image.to_shader((TileMode::Repeat, TileMode::Repeat), SamplingOptions::default(), &local_matrix) {
+            if let Some(shader) = image.to_shader((TileMode::Repeat, TileMode::Repeat), sampling, &local_matrix) {
                 let mut tiled_paint = Paint::default();
                 tiled_paint.set_shader(shader);
                 canvas.draw_rect(dst, &tiled_paint);
@@ -1562,6 +1950,19 @@ fn named_color(name: &str) -> Option<[f32; 4]> {
     })
 }
 
+/// RN `fontWeight`: `400`, `"400"`, `"bold"`, `"normal"`.
+fn parse_font_weight(v: &Json) -> Option<i32> {
+    match v {
+        Json::Number(n) => n.as_f64().map(|w| w as i32),
+        Json::String(s) => match s.as_str() {
+            "normal" => Some(400),
+            "bold" => Some(700),
+            other => other.parse::<i32>().ok(),
+        },
+        _ => None,
+    }
+}
+
 fn json_point(v: Option<&Json>) -> Option<(f32, f32)> {
     let v = v?;
     Some((v.get("x")?.as_f64()? as f32, v.get("y")?.as_f64()? as f32))
@@ -1576,23 +1977,58 @@ fn json_rect(v: &Json) -> Option<Rect> {
     Some(Rect::from_xywh(x, y, w, h))
 }
 
-/// Only translation, matching `Transforms3d` as `@sc/ui`'s Atmosphere uses it
-/// (`[{ translateX }, { translateY }]`) — rotate/scale are unused so far.
-fn json_translate(v: Option<&Json>) -> (f32, f32) {
-    let Some(arr) = v.and_then(Json::as_array) else {
-        return (0.0, 0.0);
-    };
-    let mut dx = 0.0;
-    let mut dy = 0.0;
+/// RN/rn-skia transform array (`[{translateX}, {scale}, {rotate: "45deg"},
+/// ...]`) → a matrix around the local origin (pivot applied by the caller).
+/// Entries compose in array order, same as RN.
+fn parse_transform_matrix(v: &Json) -> Option<Matrix> {
+    let arr = v.as_array()?;
+    let mut m = Matrix::new_identity();
     for entry in arr {
         if let Some(x) = entry.get("translateX").and_then(Json::as_f64) {
-            dx += x as f32;
+            m = Matrix::concat(&m, &Matrix::translate((x as f32, 0.0)));
         }
         if let Some(y) = entry.get("translateY").and_then(Json::as_f64) {
-            dy += y as f32;
+            m = Matrix::concat(&m, &Matrix::translate((0.0, y as f32)));
+        }
+        if let Some(s) = entry.get("scale").and_then(Json::as_f64) {
+            m = Matrix::concat(&m, &Matrix::scale((s as f32, s as f32)));
+        }
+        if let Some(s) = entry.get("scaleX").and_then(Json::as_f64) {
+            m = Matrix::concat(&m, &Matrix::scale((s as f32, 1.0)));
+        }
+        if let Some(s) = entry.get("scaleY").and_then(Json::as_f64) {
+            m = Matrix::concat(&m, &Matrix::scale((1.0, s as f32)));
+        }
+        if let Some(deg) = entry.get("rotate").or_else(|| entry.get("rotateZ")).and_then(parse_angle_deg) {
+            m = Matrix::concat(&m, &Matrix::rotate_deg(deg));
         }
     }
-    (dx, dy)
+    Some(m)
+}
+
+/// RN angle: `"45deg"` / `"0.5rad"` strings; bare numbers are radians
+/// (what an animated style computes).
+fn parse_angle_deg(v: &Json) -> Option<f32> {
+    match v {
+        Json::Number(n) => n.as_f64().map(|r| (r as f32).to_degrees()),
+        Json::String(s) => {
+            if let Some(deg) = s.strip_suffix("deg") {
+                deg.trim().parse::<f32>().ok()
+            } else if let Some(rad) = s.strip_suffix("rad") {
+                rad.trim().parse::<f32>().ok().map(f32::to_degrees)
+            } else {
+                s.trim().parse::<f32>().ok().map(f32::to_degrees)
+            }
+        }
+        _ => None,
+    }
+}
+
+/// `translate(pivot) ∘ m ∘ translate(-pivot)` — applies `m` around `pivot`.
+fn matrix_around(pivot: (f32, f32), m: &Matrix) -> Matrix {
+    let mut out = Matrix::translate(pivot);
+    out = Matrix::concat(&out, m);
+    Matrix::concat(&out, &Matrix::translate((-pivot.0, -pivot.1)))
 }
 
 fn json_blend_mode(name: &str) -> Option<BlendMode> {
@@ -1628,20 +2064,23 @@ fn gradient_colors_and_positions(props: &Json) -> Option<(Vec<Color4f>, Option<V
     Some((colors, positions))
 }
 
-fn radial_gradient_shader(props: &Json, fallback_cx: f32, fallback_cy: f32, fallback_r: f32) -> Option<Shader> {
+/// Gradient geometry (`c`/`start`/`end` props and the fallbacks) is
+/// canvas-local, exactly as the JS side wrote it; `local_matrix` carries the
+/// subtree's window offset so the shader lands where its shape draws.
+fn radial_gradient_shader(props: &Json, fallback_cx: f32, fallback_cy: f32, fallback_r: f32, local_matrix: &Matrix) -> Option<Shader> {
     let (cx, cy) = json_point(props.get("c")).unwrap_or((fallback_cx, fallback_cy));
     let r = props.get("r").and_then(Json::as_f64).map(|r| r as f32).unwrap_or(fallback_r);
     let (colors, positions) = gradient_colors_and_positions(props)?;
     let gradient_colors = gradient::Colors::new(&colors, positions.as_deref(), TileMode::Clamp, None);
     let gradient = gradient::Gradient::new(gradient_colors, gradient::Interpolation::default());
-    gradient::shaders::radial_gradient((Point::new(cx, cy), r), &gradient, None)
+    gradient::shaders::radial_gradient((Point::new(cx, cy), r), &gradient, local_matrix)
 }
 
-fn linear_gradient_shader(props: &Json) -> Option<Shader> {
+fn linear_gradient_shader(props: &Json, local_matrix: &Matrix) -> Option<Shader> {
     let (sx, sy) = json_point(props.get("start"))?;
     let (ex, ey) = json_point(props.get("end"))?;
     let (colors, positions) = gradient_colors_and_positions(props)?;
     let gradient_colors = gradient::Colors::new(&colors, positions.as_deref(), TileMode::Clamp, None);
     let gradient = gradient::Gradient::new(gradient_colors, gradient::Interpolation::default());
-    gradient::shaders::linear_gradient((Point::new(sx, sy), Point::new(ex, ey)), &gradient, None)
+    gradient::shaders::linear_gradient((Point::new(sx, sy), Point::new(ex, ey)), &gradient, local_matrix)
 }

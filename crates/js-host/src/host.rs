@@ -62,10 +62,24 @@ fn remove_child(parent: u32, child: u32) {
     SCENE.with(|s| s.borrow_mut().remove_child(parent, child));
 }
 
+thread_local! {
+    // Style keys the renderer doesn't model — warned once per key name, so a
+    // dropped visual prop is a console line instead of a silent no-op.
+    static WARNED_STYLE_KEYS: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
+}
+
 #[hermes_op(name = "__scSetStyle")]
 fn set_style(id: u32, style_json: String) {
-    let style: StyleInput = serde_json::from_str(&style_json)
-        .unwrap_or_else(|e| panic!("invalid style JSON for node {id}: {e}"));
+    let mut deserializer = serde_json::Deserializer::from_str(&style_json);
+    let style: StyleInput = serde_ignored::deserialize(&mut deserializer, |path| {
+        let key = path.to_string();
+        WARNED_STYLE_KEYS.with(|warned| {
+            if warned.borrow_mut().insert(key.clone()) {
+                eprintln!("[js-host] style prop `{key}` is not supported by the renderer and was dropped (first seen on node {id})");
+            }
+        });
+    })
+    .unwrap_or_else(|e| panic!("invalid style JSON for node {id}: {e}"));
     SCENE.with(|s| s.borrow_mut().set_style(id, style));
 }
 

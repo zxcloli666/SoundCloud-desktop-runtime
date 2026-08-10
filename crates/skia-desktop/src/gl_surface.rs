@@ -10,7 +10,7 @@ use glutin_winit::DisplayBuilder;
 use raw_window_handle::HasWindowHandle;
 use skia_safe::gpu::gl::FramebufferInfo;
 use skia_safe::gpu::{self, SurfaceOrigin, backend_render_targets};
-use skia_safe::{Canvas, ColorType, EncodedImageFormat, Surface};
+use skia_safe::{Canvas, ColorSpace, ColorType, EncodedImageFormat, Surface};
 use winit::event_loop::EventLoop;
 use winit::window::{Window, WindowAttributes};
 
@@ -44,11 +44,18 @@ impl GlWindowSurface {
         let display_builder = DisplayBuilder::new().with_window_attributes(Some(attributes));
         let (window, gl_config) = display_builder
             .build(event_loop, template, |configs| {
+                // Transparency first; then the *most* MSAA samples up to 4x —
+                // edge quality on rotated/curved geometry. Not requested via
+                // the template (a hard requirement fails window creation on
+                // drivers without a matching transparent+MSAA config).
                 configs
                     .reduce(|accum, config| {
                         let transparency_check = config.supports_transparency().unwrap_or(false)
                             & !accum.supports_transparency().unwrap_or(false);
-                        if transparency_check || config.num_samples() < accum.num_samples() {
+                        let same_transparency = config.supports_transparency().unwrap_or(false)
+                            == accum.supports_transparency().unwrap_or(false);
+                        let more_samples = config.num_samples().min(4) > accum.num_samples().min(4);
+                        if transparency_check || (same_transparency && more_samples) {
                             config
                         } else {
                             accum
@@ -161,12 +168,15 @@ impl GlWindowSurface {
         );
         let backend_render_target =
             backend_render_targets::make_gl(size, num_samples, stencil_size, fb_info);
+        // sRGB-tagged destination: Skia interpolates gradients and blends
+        // alpha in a defined color space instead of "whatever the FB is" —
+        // solid colors pass through byte-identical.
         gpu::surfaces::wrap_backend_render_target(
             gr_context,
             &backend_render_target,
             SurfaceOrigin::BottomLeft,
             ColorType::RGBA8888,
-            None,
+            ColorSpace::new_srgb(),
             None,
         )
         .expect("could not wrap backend render target as Skia surface")

@@ -10,9 +10,10 @@
 **Причина**: `Font::default()` даёт typeface без единого глифа — не
 крашится, просто рисует пустоту.
 
-**Фикс**: реальный шрифт только через `FontMgr::default().
-legacy_make_typeface(None, FontStyle::default())` — резолвится в "Noto
-Sans" (fontconfig на тестовой машине видит 708 семейств).
+**Фикс**: реальный шрифт только через `FontMgr` — сейчас
+`match_family_style` (fallback `legacy_make_typeface`), кэш per
+(family, weight) в `scene.rs::cached_typeface`; дефолт резолвится в
+"Noto Sans" (fontconfig на тестовой машине видит 708 семейств).
 
 ## esbuild `jsxDEV` + `NODE_ENV=development` — безобидный шум в консоль
 

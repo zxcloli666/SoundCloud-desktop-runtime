@@ -10,10 +10,18 @@ import type { GestureResponderEvent, LayoutChangeEvent, StyleProp, TextProps, Te
 
 function ViewAndText() {
   const style: StyleProp<ViewStyle> = { flexDirection: 'row', gap: 12 };
-  const textStyle: StyleProp<TextStyle> = { fontWeight: '600' };
+  const textStyle: StyleProp<TextStyle> = {
+    fontWeight: '600',
+    letterSpacing: 2,
+    lineHeight: 20,
+    textAlign: 'center',
+    fontFamily: 'Inter',
+  };
   return (
     <View style={style}>
-      <Text style={textStyle}>label</Text>
+      <Text style={textStyle} numberOfLines={2}>
+        label
+      </Text>
     </View>
   );
 }

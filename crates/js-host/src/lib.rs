@@ -84,3 +84,21 @@ mod image_resize_mode_test;
 #[cfg(test)]
 #[path = "tests/screen_swap.rs"]
 mod screen_swap_test;
+#[cfg(test)]
+#[path = "tests/gradient_offset.rs"]
+mod gradient_offset_test;
+#[cfg(test)]
+#[path = "tests/typography.rs"]
+mod typography_test;
+#[cfg(test)]
+#[path = "tests/backdrop_blur.rs"]
+mod backdrop_blur_test;
+#[cfg(test)]
+#[path = "tests/transform.rs"]
+mod transform_test;
+#[cfg(test)]
+#[path = "tests/image_quality.rs"]
+mod image_quality_test;
+#[cfg(test)]
+#[path = "tests/borders_elevation.rs"]
+mod borders_elevation_test;

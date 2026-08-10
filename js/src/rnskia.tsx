@@ -5,8 +5,9 @@
 // types in our one outer tree (js-host/src/scene.rs draws them straight from
 // props, no picture replay) — see Desktop-Runtime/CLAUDE.md for why.
 //
-// Covers broadly, not just what `@sc/ui` uses today. Exotic image-filter
-// effects (BackdropBlur/BackdropFilter/Mask/ColorMatrix/Shader) degrade
+// Covers broadly, not just what `@sc/ui` uses today. BackdropBlur/
+// BackdropFilter apply a real backdrop blur (glassmorphism) on the Rust
+// side; the remaining exotic effects (Mask/ColorMatrix/Shader) degrade
 // gracefully: they mount and lay out correctly but don't yet apply their
 // visual effect (see js-host/src/scene.rs's NodeKind mapping) — real asset
 // decoding (Image/useImage) and custom fonts (useFont) are follow-ups too.
@@ -35,12 +36,14 @@ export const Text = skNode('Text');
 export const Image = skNode('Image');
 export const Paint = skNode('Paint');
 
+// Real backdrop sampling on the Rust side (scene.rs `draw_backdrop_blur`).
+export const BackdropBlur = skNode('BackdropBlur');
+export const BackdropFilter = skNode('BackdropFilter');
+
 // Degrade-gracefully stand-ins (see module doc comment): render/lay out
 // correctly, effect itself not applied yet.
 export const Shader = skNode('Shader');
 export const ColorMatrix = skNode('ColorMatrix');
-export const BackdropBlur = skNode('BackdropBlur');
-export const BackdropFilter = skNode('BackdropFilter');
 export const Mask = skNode('Mask');
 
 // Pure geometry helpers — react-native-skia implements these as plain JS
@@ -125,10 +128,13 @@ export function useClock(): { value: number } {
   return ref.current;
 }
 
-// No asset-decoding pipeline yet — always "not loaded", matching the shape
-// real react-native-skia returns while an image is in flight.
-export function useImage(_source: unknown): null {
-  return null;
+// The handle is just `{uri}` — the actual fetch+decode happens on the Rust
+// side per <Image> node (scene.rs `set_sk_props` → image_cache), so this is
+// available synchronously. Real SkImage methods (width()/height()/...) are
+// not modeled; add them if a consumer ever needs pixel dimensions in JS.
+export function useImage(source: unknown): { uri: string } | null {
+  const uri = typeof source === 'string' ? source : ((source as { uri?: string } | null)?.uri ?? null);
+  return React.useMemo(() => (uri ? { uri } : null), [uri]);
 }
 
 // No custom font loading yet — components needing a font (e.g. a real

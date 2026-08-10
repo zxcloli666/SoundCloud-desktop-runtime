@@ -4,6 +4,8 @@
 // build.mjs (e.g. examples/soundcloud/js/build.mjs), so the alias table
 // and the workaround never drift apart between them.
 import { readFileSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { dirname } from 'node:path';
 
 // Spike 7: real RN packages (`@shopify/react-native-skia`, `react-native-
 // reanimated`) and anything targeting real RN (`@sc/ui`) never know they're
@@ -11,8 +13,20 @@ import { readFileSync, writeFileSync } from 'node:fs';
 // a DOM-backed `react-native`. Paths are relative to *this file's own
 // directory* (js/), so a consumer's build.mjs elsewhere still resolves the
 // engine's real shim files, not its own.
-export function shimAliases(engineJsDir = new URL('.', import.meta.url).pathname) {
+//
+// `react`/`react-reconciler` are pinned to the CONSUMER's copies: the shim
+// files live inside the engine package with its own node_modules, so without
+// the pin esbuild bundles a second `react` for them — two dispatcher
+// instances, and every hook inside a shim (reanimated, useImage, ...) dies
+// with "Invalid hook call".
+export function shimAliases(engineJsDir = new URL('.', import.meta.url).pathname, consumerDir = process.cwd()) {
+  const requireFromConsumer = createRequire(`${consumerDir}/package.json`);
+  const reactDir = dirname(requireFromConsumer.resolve('react/package.json'));
   return {
+    react: reactDir,
+    'react/jsx-runtime': `${reactDir}/jsx-runtime.js`,
+    'react/jsx-dev-runtime': `${reactDir}/jsx-dev-runtime.js`,
+    'react-reconciler': dirname(requireFromConsumer.resolve('react-reconciler/package.json')),
     'react-native': `${engineJsDir}src/react-native.tsx`,
     '@shopify/react-native-skia': `${engineJsDir}src/rnskia.tsx`,
     'react-native-reanimated': `${engineJsDir}src/reanimated.tsx`,
