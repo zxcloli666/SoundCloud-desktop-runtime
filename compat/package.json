@@ -12,11 +12,11 @@
     "apply-versions": "node apply-versions.mjs"
   },
   "devDependencies": {
-    "@shopify/react-native-skia": "2.11.1",
+    "@shopify/react-native-skia": "2.11.2",
     "@types/react": "19.2.3",
     "@types/react-reconciler": "^0.28.9",
     "react": "19.2.3",
-    "react-native": "0.87.0",
+    "react-native": "0.87.1",
     "react-native-reanimated": "4.6.0",
     "react-reconciler": "0.33.0",
     "typescript": "^6.0.3"
