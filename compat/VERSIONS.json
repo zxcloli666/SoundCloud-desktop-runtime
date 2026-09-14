@@ -84,11 +84,15 @@
       ]
     },
     "react-reconciler": {
-      "current": "0.33.0",
+      "current": "0.34.0",
       "history": [
         {
           "version": "0.33.0",
           "verifiedAt": "2026-07-02"
+        },
+        {
+          "version": "0.34.0",
+          "verifiedAt": "2026-09-14"
         }
       ]
     }
