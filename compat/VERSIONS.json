@@ -1,7 +1,7 @@
 {
   "packages": {
     "react-native": {
-      "current": "0.87.1",
+      "current": "0.88.0",
       "history": [
         {
           "version": "0.86.0",
@@ -18,6 +18,10 @@
         {
           "version": "0.87.1",
           "verifiedAt": "2026-09-07"
+        },
+        {
+          "version": "0.88.0",
+          "verifiedAt": "2026-10-19"
         }
       ]
     },
