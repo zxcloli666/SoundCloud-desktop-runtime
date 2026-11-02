@@ -16,7 +16,7 @@
     "@types/react": "19.2.3",
     "@types/react-reconciler": "^0.28.9",
     "react": "19.2.3",
-    "react-native": "0.88.0",
+    "react-native": "0.88.1",
     "react-native-reanimated": "4.7.1",
     "react-reconciler": "0.34.0",
     "typescript": "^6.0.3"
