@@ -4,10 +4,12 @@ registries:
     type: cargo-registry
     registry: desktop-runtime
     url: https://zxcloli666.github.io/SoundCloud-desktop-runtime/registry/
+    token: public
   rusty-hermes-fork:
     type: cargo-registry
     registry: rusty-hermes-fork
     url: https://zxcloli666.github.io/rusty_hermes/registry/
+    token: public
 updates:
   - package-ecosystem: cargo
     directories:
