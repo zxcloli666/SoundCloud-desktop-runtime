@@ -1,0 +1,32 @@
+version: 2
+registries:
+  desktop-runtime:
+    type: cargo-registry
+    url: sparse+https://zxcloli666.github.io/SoundCloud-desktop-runtime/registry/
+  rusty-hermes-fork:
+    type: cargo-registry
+    url: sparse+https://zxcloli666.github.io/rusty_hermes/registry/
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    registries:
+      - desktop-runtime
+      - rusty-hermes-fork
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+  - package-ecosystem: npm
+    directory: /js
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+  - package-ecosystem: npm
+    directory: /compat
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
