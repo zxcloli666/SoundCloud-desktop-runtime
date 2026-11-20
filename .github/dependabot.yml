@@ -10,7 +10,10 @@ registries:
     url: https://zxcloli666.github.io/rusty_hermes/registry/
 updates:
   - package-ecosystem: cargo
-    directory: /
+    directories:
+      - /
+      - /e2e
+      - /examples/soundcloud
     registries:
       - desktop-runtime
       - rusty-hermes-fork
