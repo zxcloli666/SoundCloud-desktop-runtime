@@ -132,7 +132,7 @@ jobs:
       - name: Deploy the registry index to GitHub Pages
         run: mkdir -p _site/registry && cp -r registry-index/. _site/registry/
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: _site
 
