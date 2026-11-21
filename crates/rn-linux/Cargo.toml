@@ -9,5 +9,5 @@ license.workspace = true
 [dependencies]
 js-host = { version = "0.1.2", path = "../js-host", registry = "desktop-runtime" }
 skia-desktop = { version = "0.1.2", path = "../skia-desktop", registry = "desktop-runtime" }
-skia-safe = { version = "0.99.0", features = ["gl"] }
+skia-safe = { version = "0.157.0", features = ["gl"] }
 winit = "0.30.13"
