@@ -1058,7 +1058,7 @@ name = "js-host"
 version = "0.1.2"
 dependencies = [
  "base64",
- "ordered-float",
+ "ordered-float 5.5.1",
  "reqwest",
  "rusty_hermes",
  "serde",
@@ -1546,6 +1546,15 @@ name = "ordered-float"
 version = "4.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7bb71e1b3fa6ca1c61f383464aaf2bb0e2f8e772a1f01d486832464de363b951"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
+name = "ordered-float"
+version = "5.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f59006ce1e204c30956638535b74d317bca99477b9356dfaec54c37f6f600ab"
 dependencies = [
  "num-traits",
 ]
@@ -3261,7 +3270,7 @@ checksum = "7112f23e5bbd1375b8f58707a29a2950e3c5497eadefd53a5e6ce212029cde28"
 dependencies = [
  "bindgen 0.71.1",
  "cc",
- "ordered-float",
+ "ordered-float 4.6.0",
 ]
 
 [[package]]
