@@ -7,7 +7,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-base64 = "0.22.1"
+base64 = "0.23.1"
 ordered-float = "4"
 reqwest = "0.13.4"
 # Fork, not upstream: patches 5 real build.rs bugs blocking Windows builds
