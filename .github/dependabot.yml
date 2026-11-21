@@ -12,10 +12,7 @@ registries:
     token: "${{secrets.CARGO_PUBLIC_TOKEN}}"
 updates:
   - package-ecosystem: cargo
-    directories:
-      - /
-      - /e2e
-      - /examples/soundcloud
+    directory: /
     registries:
       - desktop-runtime
       - rusty-hermes-fork
