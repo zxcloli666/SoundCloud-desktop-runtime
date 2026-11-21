@@ -9,18 +9,18 @@ importers:
   .:
     dependencies:
       react:
-        specifier: 19.2.3
-        version: 19.2.3
+        specifier: 19.3.1
+        version: 19.3.1
       react-reconciler:
         specifier: ^0.32.0
-        version: 0.32.0(react@19.2.3)
+        version: 0.32.0(react@19.3.1)
     devDependencies:
       '@types/react':
-        specifier: 19.2.3
-        version: 19.2.3
+        specifier: 19.3.0
+        version: 19.3.0
       '@types/react-reconciler':
         specifier: ^0.28.9
-        version: 0.28.9(@types/react@19.2.3)
+        version: 0.28.9(@types/react@19.3.0)
       esbuild:
         specifier: ^0.25.0
         version: 0.25.12
@@ -191,8 +191,8 @@ packages:
     peerDependencies:
       '@types/react': '*'
 
-  '@types/react@19.2.3':
-    resolution: {integrity: sha512-k5dJVszUiNr1DSe8Cs+knKR6IrqhqdhpUwzqhkS8ecQTSf3THNtbfIp/umqHMpX2bv+9dkx3fwDv/86LcSfvSg==}
+  '@types/react@19.3.0':
+    resolution: {integrity: sha512-N0rFCuH9YoxG9/m61l9MfpJKfmLOVU0em7ipIz6TRgSSkvReLB9vL85GB+yr8Bs5leqpvg96JSwF4ZS1s4viQg==}
 
   csstype@3.2.3:
     resolution: {integrity: sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==}
@@ -208,8 +208,8 @@ packages:
     peerDependencies:
       react: ^19.1.0
 
-  react@19.2.3:
-    resolution: {integrity: sha512-Ku/hhYbVjOQnXDZFv2+RibmLFGwFdeeKHFcOTlrt7xplBnya5OGn/hIRDsqDiSUcfORsDC7MPxwork8jBwsIWA==}
+  react@19.3.1:
+    resolution: {integrity: sha512-QNhWdt7nrgVWWQG58QuGsAR3jv3Hbe4mb4vz7w2csnHavciZJgda1CPNaldF6eVxv90ud3jUXpKlHL69gO38yw==}
     engines: {node: '>=0.10.0'}
 
   scheduler@0.26.0:
@@ -300,11 +300,11 @@ snapshots:
   '@esbuild/win32-x64@0.25.12':
     optional: true
 
-  '@types/react-reconciler@0.28.9(@types/react@19.2.3)':
+  '@types/react-reconciler@0.28.9(@types/react@19.3.0)':
     dependencies:
-      '@types/react': 19.2.3
+      '@types/react': 19.3.0
 
-  '@types/react@19.2.3':
+  '@types/react@19.3.0':
     dependencies:
       csstype: 3.2.3
 
@@ -339,12 +339,12 @@ snapshots:
       '@esbuild/win32-ia32': 0.25.12
       '@esbuild/win32-x64': 0.25.12
 
-  react-reconciler@0.32.0(react@19.2.3):
+  react-reconciler@0.32.0(react@19.3.1):
     dependencies:
-      react: 19.2.3
+      react: 19.3.1
       scheduler: 0.26.0
 
-  react@19.2.3: {}
+  react@19.3.1: {}
 
   scheduler@0.26.0: {}
 
